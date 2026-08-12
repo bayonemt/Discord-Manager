@@ -108,8 +108,3 @@ discord_quest_relay.py    # relay local opcional, só necessário para missões 
 - `PLAY_ON_DESKTOP`/`STREAM_ON_DESKTOP` só funcionam no cliente desktop (`DiscordNative`), não no navegador.
 - `ACHIEVEMENT_IN_ACTIVITY` depende do relay local rodando; sem ele, o bypass falha com uma mensagem clara indicando o motivo (CSP).
 - Como qualquer engenharia reversa de API não documentada, o Discord pode mudar comportamento/formato das respostas a qualquer momento e quebrar partes do script sem aviso.
-
-## Licença
-
-Sem licença definida — uso pessoal/educacional. Se for publicar, considere deixar isso explícito no repositório.
-
