@@ -146,10 +146,197 @@
     RunningGameStore,
     ApplicationStreamingStore,
     ChannelStore,
-    GuildChannelStore;
+    GuildChannelStore,
+    GuildMemberStore,
+    GuildStore,
+    UserStore,
+    RoleStore,
+    GuildActions,
+    SnowflakeUtils,
+    lazyMemberListSubscribe,
+    guildSubscriptionsUpdate;
   try {
     wpRequire = webpackChunkdiscord_app.push([[Symbol()], {}, (r) => r]);
     webpackChunkdiscord_app.pop();
+    const flattenExports = (root) => {
+      const out = [];
+      const push = (v) => {
+        if (v && (typeof v === 'object' || typeof v === 'function')) out.push(v);
+      };
+      push(root);
+      push(root?.default);
+      push(root?.Z);
+      push(root?.ZP);
+      push(root?.A);
+      push(root?.Ay);
+      return out;
+    };
+    const fnSrc = (f) => {
+      try {
+        return Function.prototype.toString.call(f);
+      } catch {
+        return '';
+      }
+    };
+    const isSnowflake = (v) => /^\d{15,22}$/.test(String(v));
+    const toArray = (v) => {
+      if (v == null) return [];
+      if (Array.isArray(v)) return v;
+      if (typeof v[Symbol.iterator] === 'function') return [...v];
+      if (typeof v.toArray === 'function') return v.toArray();
+      if (typeof v.values === 'function') return [...v.values()];
+      if (typeof v === 'object') return Object.values(v);
+      return [];
+    };
+    const isI18nLike = (obj) => {
+      if (!obj || typeof obj !== 'object') return false;
+      for (const key of ['subscribe', 'dispatch', 'getMemberIds', 'getMembers', 'getUser', 'requestMembers']) {
+        const f = obj[key];
+        if (typeof f !== 'function') continue;
+        const s = fnSrc(f);
+        if (/locale|i18n|Intl|MessageFormat|defaultLocale|getLocale|requested message/i.test(s)) return true;
+      }
+      return false;
+    };
+    const probeFluxDispatcher = (d) => {
+      if (!d || typeof d.subscribe !== 'function' || typeof d.dispatch !== 'function') return false;
+      if (typeof d.unsubscribe !== 'function') return false;
+      if (isI18nLike(d)) return false;
+      const token = `__dm_flux_probe_${Date.now().toString(36)}`;
+      let hit = false;
+      const handler = () => {
+        hit = true;
+      };
+      try {
+        d.subscribe(token, handler);
+        d.dispatch({ type: token });
+        d.unsubscribe(token, handler);
+        return hit;
+      } catch {
+        try {
+          d.unsubscribe(token, handler);
+        } catch {}
+        return false;
+      }
+    };
+    const findFluxDispatcher = () => {
+      for (const mod of Object.values(wpRequire.c)) {
+        const src = typeof mod?.toString === 'function' ? mod.toString() : '';
+        if (
+          !src.includes('GUILD_MEMBER_LIST_UPDATE') &&
+          !src.includes('GUILD_MEMBERS_CHUNK') &&
+          !src.includes('RUNNING_GAMES_CHANGE')
+        ) {
+          continue;
+        }
+        for (const exp of flattenExports(mod?.exports)) {
+          if (probeFluxDispatcher(exp)) return exp;
+        }
+      }
+      for (const mod of Object.values(wpRequire.c)) {
+        for (const exp of flattenExports(mod?.exports)) {
+          if (probeFluxDispatcher(exp)) return exp;
+        }
+      }
+      return null;
+    };
+    const findByProps = (...props) => {
+      for (const mod of Object.values(wpRequire.c)) {
+        for (const exp of flattenExports(mod?.exports)) {
+          if (exp && props.every((p) => typeof exp[p] === 'function')) return exp;
+        }
+      }
+      return null;
+    };
+    const findByPropsValidated = (validate, ...props) => {
+      for (const mod of Object.values(wpRequire.c)) {
+        for (const exp of flattenExports(mod?.exports)) {
+          if (exp && props.every((p) => typeof exp[p] === 'function') && validate(exp)) return exp;
+        }
+      }
+      return null;
+    };
+    const probeMemberStore = (store, guildId) => {
+      if (!store || typeof store.getMemberIds !== 'function' || typeof store.getMembers !== 'function') {
+        return false;
+      }
+      if (isI18nLike(store)) return false;
+      if (!guildId) return typeof store.getSelfMember === 'function' || typeof store.getMember === 'function';
+      try {
+        const ids = toArray(store.getMemberIds(guildId));
+        if (ids.length && !ids.every((id) => isSnowflake(id))) return false;
+        const members = toArray(store.getMembers(guildId));
+        if (members.length) {
+          const m0 = members[0];
+          if (typeof m0 === 'string') return false;
+          if (!(m0?.userId || m0?.user?.id || m0?.user_id)) return false;
+        }
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    const probeUserStore = (store) => {
+      if (!store || typeof store.getUser !== 'function' || typeof store.getCurrentUser !== 'function') return false;
+      if (isI18nLike(store)) return false;
+      try {
+        const me = store.getCurrentUser();
+        if (!me?.id || !isSnowflake(me.id)) return false;
+        const u = store.getUser(me.id);
+        return !!u && String(u.id) === String(me.id);
+      } catch {
+        return false;
+      }
+    };
+    const probeGuildActions = (actions) => {
+      if (!actions || typeof actions.requestMembers !== 'function') return false;
+      if (isI18nLike(actions)) return false;
+      return typeof actions.requestMembersById === 'function';
+    };
+    const probeSnowflakeUtils = (utils) => {
+      if (!utils || typeof utils.fromTimestamp !== 'function') return false;
+      if (isI18nLike(utils)) return false;
+      try {
+        const id = utils.fromTimestamp(Date.now());
+        return isSnowflake(id);
+      } catch {
+        return false;
+      }
+    };
+    const findFnInModuleSource = (fnName, needles) => {
+      for (const mod of Object.values(wpRequire.c)) {
+        const src = typeof mod?.toString === 'function' ? mod.toString() : '';
+        if (!needles.every((n) => src.includes(n))) continue;
+        for (const exp of flattenExports(mod?.exports)) {
+          const fn = exp?.[fnName];
+          if (typeof fn === 'function' && !isI18nLike(exp)) return fn.bind(exp);
+        }
+      }
+      return null;
+    };
+
+    FluxDispatcher = findFluxDispatcher();
+    GuildActions = findByPropsValidated(probeGuildActions, 'requestMembers', 'requestMembersById');
+    SnowflakeUtils = findByPropsValidated(probeSnowflakeUtils, 'fromTimestamp');
+    lazyMemberListSubscribe = findFnInModuleSource('requestMemberListSubscription', [
+      'requestMemberListSubscription',
+      'GUILD_MEMBER_LIST_UPDATE',
+    ]);
+    if (!lazyMemberListSubscribe) {
+      lazyMemberListSubscribe = findFnInModuleSource('requestMemberListSubscription', [
+        'requestMemberListSubscription',
+      ]);
+    }
+    guildSubscriptionsUpdate = findFnInModuleSource('updateGuildSubscriptions', ['updateGuildSubscriptions', 'op']);
+    window.__dmWebpack = {
+      flux: !!FluxDispatcher,
+      memberStore: !!GuildMemberStore,
+      guildActions: !!GuildActions,
+      lazySub: !!lazyMemberListSubscribe,
+      guildSubUpdate: !!guildSubscriptionsUpdate,
+    };
+    let bestMemberStore = null;
+    let bestMemberStoreScore = 0;
     for (const mod of Object.values(wpRequire.c)) {
       try {
         const e = mod?.exports;
@@ -158,10 +345,64 @@
         if (e.Ay?.getRunningGames) RunningGameStore = e.Ay;
         if (e.A?.__proto__?.getAllThreadsForParent) ChannelStore = e.A;
         if (e.Ay?.getSFWDefaultChannel) GuildChannelStore = e.Ay;
-        if (e.h?.__proto__?.flushWaitQueue) FluxDispatcher = e.h;
+        if (!FluxDispatcher && e.h?.__proto__?.flushWaitQueue && probeFluxDispatcher(e.h)) FluxDispatcher = e.h;
         if (e.Bo?.get) discordApi = e.Bo;
+        for (const c of flattenExports(e)) {
+          if (!c || typeof c !== 'object') continue;
+          if (typeof c.getMembers === 'function' && typeof c.getMemberIds === 'function' && !isI18nLike(c)) {
+            let score = 2;
+            if (typeof c.getMember === 'function') score++;
+            if (typeof c.getSelfMember === 'function') score++;
+            if (typeof c.isMember === 'function') score++;
+            if (score > bestMemberStoreScore) {
+              bestMemberStoreScore = score;
+              bestMemberStore = c;
+            }
+          }
+          if (
+            typeof c.getGuild === 'function' &&
+            typeof c.getGuilds === 'function' &&
+            !GuildStore
+          ) {
+            try {
+              const probe = c.getGuilds?.();
+              if (probe && (Array.isArray(probe) || typeof probe === 'object')) GuildStore = c;
+            } catch {
+              /* ignore bad store */
+            }
+          }
+          if (probeUserStore(c)) UserStore = c;
+          if (typeof c.getRoles === 'function' && typeof c.getRole === 'function' && !isI18nLike(c)) {
+            RoleStore = c;
+          }
+        }
       } catch {}
     }
+    let probeGuildId = null;
+    try {
+      const guilds = GuildStore?.getGuilds?.();
+      const first = toArray(guilds)[0];
+      probeGuildId = first?.id ?? first?.guild?.id ?? null;
+    } catch {}
+    if (bestMemberStore && probeMemberStore(bestMemberStore, probeGuildId)) {
+      GuildMemberStore = bestMemberStore;
+    } else {
+      GuildMemberStore = findByPropsValidated(
+        (c) => probeMemberStore(c, probeGuildId),
+        'getMembers',
+        'getMemberIds',
+        'getMember',
+      );
+    }
+    if (!FluxDispatcher) {
+      const legacy = findByProps('dispatch', 'subscribe', 'unsubscribe');
+      if (probeFluxDispatcher(legacy)) FluxDispatcher = legacy;
+    }
+    window.__dmWebpack.memberStore = !!GuildMemberStore;
+    window.__dmWebpack.memberStoreScore = bestMemberStoreScore;
+    window.__dmWebpack.flux = !!FluxDispatcher;
+    window.__dmWebpack.fluxProbe = probeFluxDispatcher(FluxDispatcher);
+    window.__dmWebpack.userStore = !!UserStore;
   } catch (e) {}
 
   const getOS = () => {
@@ -243,6 +484,43 @@
   ];
   const escapeHtml = (unsafe) =>
     unsafe ? unsafe.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') : '';
+  const dmShimmerBgSize = (len) => `${Math.min(1400, Math.max(300, len * 16))}% 100%`;
+  const dmShimmer = (text) => {
+    const raw = String(text ?? '');
+    return `<span class="dm-shimmer" style="background-size:${dmShimmerBgSize(raw.length)}">${escapeHtml(raw)}</span>`;
+  };
+  const dmLoadHtml = (text, suffixHtml = '') =>
+    suffixHtml
+      ? `<span class="dm-load-row">${dmShimmer(text)}<span class="dm-load-extra">${suffixHtml}</span></span>`
+      : dmShimmer(text);
+  /** Atualiza só o texto — não recria o nó, para o shimmer não “cortar” a cada tick. */
+  const dmUpdateShimmer = (host, text, suffixHtml = '') => {
+    if (!host) return;
+    let shimmer = host.querySelector('.dm-shimmer-live');
+    let extra = host.querySelector('.dm-load-extra');
+    const plain = String(text ?? '');
+    if (!shimmer) {
+      if (suffixHtml) {
+        host.innerHTML = `<span class="dm-load-row"><span class="dm-shimmer dm-shimmer-live"></span><span class="dm-load-extra"></span></span>`;
+      } else {
+        host.innerHTML = `<span class="dm-shimmer dm-shimmer-live"></span>`;
+      }
+      shimmer = host.querySelector('.dm-shimmer-live');
+      extra = host.querySelector('.dm-load-extra');
+    }
+    if (!shimmer) return;
+    shimmer.textContent = plain;
+    shimmer.style.backgroundSize = dmShimmerBgSize(plain.length);
+    if (extra) extra.innerHTML = suffixHtml || '';
+    else if (suffixHtml) {
+      host.innerHTML = `<span class="dm-load-row"><span class="dm-shimmer dm-shimmer-live"></span><span class="dm-load-extra">${suffixHtml}</span></span>`;
+      const sh = host.querySelector('.dm-shimmer-live');
+      if (sh) {
+        sh.textContent = plain;
+        sh.style.backgroundSize = dmShimmerBgSize(plain.length);
+      }
+    }
+  };
 
   const enrollQuest = async (questId) => {
     const r = await fetch(`https://discord.com/api/v9/quests/${questId}/enroll`, {
@@ -302,14 +580,14 @@
       });
       if (r.status === 429) {
         const retry = await r.json().catch(() => ({}));
-        stEl.innerHTML = `<span class="dm-spin"></span> ⏳ Rate limited... ${progressBar(secondsDone, secondsNeeded)}`;
+        dmUpdateShimmer(stEl, `⏳ Rate limited... `, progressBar(secondsDone, secondsNeeded));
         await sleep((retry.retry_after || 5) * 1000);
         continue;
       }
       if (!r.ok) throw new Error(`Erro ${r.status}`);
       const data = await r.json().catch(() => ({}));
       secondsDone = Math.min(secondsNeeded, timestamp);
-      stEl.innerHTML = `<span class="dm-spin"></span> 🎬 ${questName}: ${secondsDone}/${secondsNeeded}s ${progressBar(secondsDone, secondsNeeded)}`;
+      dmUpdateShimmer(stEl, `🎬 ${questName}: ${secondsDone}/${secondsNeeded}s`, progressBar(secondsDone, secondsNeeded));
       if (data.completed_at != null) {
         secondsDone = secondsNeeded;
         break;
@@ -406,7 +684,7 @@
             } catch {
               progress = 0;
             }
-            stEl.innerHTML = `<span class="dm-spin"></span> 🎮 ${applicationName}: ${progress}/${secondsNeeded}s ${progressBar(progress, secondsNeeded)}`;
+            dmUpdateShimmer(stEl, `🎮 ${applicationName}: ${progress}/${secondsNeeded}s`, progressBar(progress, secondsNeeded));
             if (progress >= secondsNeeded) {
               cleanup();
               stEl.innerHTML = `✅ 🎮 ${applicationName}: Concluída! ${progressBar(secondsNeeded, secondsNeeded)}`;
@@ -414,7 +692,7 @@
             }
           };
           FluxDispatcher.subscribe('QUESTS_SEND_HEARTBEAT_SUCCESS', heartbeatHandler);
-          stEl.innerHTML = `<span class="dm-spin"></span> 🎮 Simulando ${applicationName}... ${progressBar(initialSecondsDone, secondsNeeded)}`;
+          dmUpdateShimmer(stEl, `🎮 Simulando ${applicationName}...`, progressBar(initialSecondsDone, secondsNeeded));
         } catch (e) {
           reject(e);
         }
@@ -462,7 +740,7 @@
         } catch {
           progress = 0;
         }
-        stEl.innerHTML = `<span class="dm-spin"></span> 📡 ${applicationName}: ${progress}/${secondsNeeded}s ${progressBar(progress, secondsNeeded)}`;
+        dmUpdateShimmer(stEl, `📡 ${applicationName}: ${progress}/${secondsNeeded}s`, progressBar(progress, secondsNeeded));
         if (progress >= secondsNeeded) {
           cleanup();
           stEl.innerHTML = `✅ 📡 ${applicationName}: Concluída! ${progressBar(secondsNeeded, secondsNeeded)}`;
@@ -470,7 +748,7 @@
         }
       };
       FluxDispatcher.subscribe('QUESTS_SEND_HEARTBEAT_SUCCESS', heartbeatHandler);
-      stEl.innerHTML = `<span class="dm-spin"></span> 📡 Simulando stream ${applicationName}... ${progressBar(initialSecondsDone, secondsNeeded)}`;
+      dmUpdateShimmer(stEl, `📡 Simulando stream ${applicationName}...`, progressBar(initialSecondsDone, secondsNeeded));
     });
   };
   const resolvePlayActivity = async (quest, secondsNeeded, initialSecondsDone, stEl, shouldStop) => {
@@ -517,7 +795,7 @@
     if (!channelId) throw new Error('Nenhum canal de voz encontrado');
     const streamKey = `call:${channelId}:1`;
     let secondsDone = initialSecondsDone;
-    stEl.innerHTML = `<span class="dm-spin"></span> 🎯 ${questName}: Iniciando... ${progressBar(secondsDone, secondsNeeded)}`;
+    dmUpdateShimmer(stEl, `🎯 ${questName}: Iniciando...`, progressBar(secondsDone, secondsNeeded));
     while (!shouldStop() && secondsDone < secondsNeeded) {
       const r = await fetch(`https://discord.com/api/v9/quests/${quest.id}/heartbeat`, {
         method: 'POST',
@@ -526,7 +804,7 @@
       });
       if (r.status === 429) {
         const retry = await r.json().catch(() => ({}));
-        stEl.innerHTML = `<span class="dm-spin"></span> ⏳ Rate limited... ${progressBar(secondsDone, secondsNeeded)}`;
+        dmUpdateShimmer(stEl, `⏳ Rate limited... `, progressBar(secondsDone, secondsNeeded));
         await sleep((retry.retry_after || 5) * 1000);
         continue;
       }
@@ -537,7 +815,7 @@
       const data = await r.json().catch(() => ({}));
       const progress = data.progress?.PLAY_ACTIVITY?.value ?? secondsDone;
       secondsDone = Math.max(secondsDone, progress);
-      stEl.innerHTML = `<span class="dm-spin"></span> 🎯 ${questName}: ${secondsDone}/${secondsNeeded}s ${progressBar(secondsDone, secondsNeeded)}`;
+      dmUpdateShimmer(stEl, `🎯 ${questName}: ${secondsDone}/${secondsNeeded}s`, progressBar(secondsDone, secondsNeeded));
       if (secondsDone >= secondsNeeded) break;
       await sleep(20000);
     }
@@ -563,7 +841,7 @@
     const questName = quest.name;
     let progress = initialProgress;
     if (applicationId && !shouldStop() && progress < target) {
-      stEl.innerHTML = `<span class="dm-spin"></span> 🏆 ${questName}: tentando heartbeat... ${progressBar(progress, target)}`;
+      dmUpdateShimmer(stEl, `🏆 ${questName}: tentando heartbeat...`, progressBar(progress, target));
       try {
         let myId;
         try {
@@ -612,7 +890,7 @@
             const data = await r.json().catch(() => ({}));
             progress =
               data.progress?.[quest.taskName]?.value ?? data.progress?.ACHIEVEMENT_IN_ACTIVITY?.value ?? progress;
-            stEl.innerHTML = `<span class="dm-spin"></span> 🏆 ${questName}: ${progress}/${target} ${progressBar(progress, target)}`;
+            dmUpdateShimmer(stEl, `🏆 ${questName}: ${progress}/${target}`, progressBar(progress, target));
             if (progress >= target) {
               await fetch(`https://discord.com/api/v9/quests/${quest.id}/heartbeat`, {
                 method: 'POST',
@@ -632,7 +910,7 @@
     }
     if (shouldStop()) return;
     if (!applicationId) throw new Error('Missão sem application_id, não é possível autorizar.');
-    stEl.innerHTML = `<span class="dm-spin"></span> 🏆 ${questName}: heartbeat não completou, tentando desbloqueio via app autorizado...`;
+    dmUpdateShimmer(stEl, `🏆 ${questName}: heartbeat não completou, tentando desbloqueio via app autorizado...`);
     const userOk = confirm(
       `Para completar "${questName}" o script precisa autorizar temporariamente o app "${applicationName}" na sua conta Discord (via OAuth) e revogar a autorização logo em seguida. Continuar?`,
     );
@@ -675,7 +953,7 @@
       const proxyTicket = ticketBody.ticket;
       if (!proxyTicket) throw new Error('Proxy ticket vazio.');
       const referrer = `https://${applicationId}.discordsays.com/?instance_id=example-cl-instance&platform=desktop&discord_proxy_ticket=${encodeURIComponent(proxyTicket)}`;
-      stEl.innerHTML = `<span class="dm-spin"></span> 🏆 ${questName}: autorizando app externo...`;
+      dmUpdateShimmer(stEl, `🏆 ${questName}: autorizando app externo...`);
       const dsAuthRes = await cspFetch(`https://${applicationId}.discordsays.com/.proxy/acf/authorize`, {
         headers: {
           'Content-Type': 'application/json',
@@ -688,7 +966,7 @@
       const dsAuthBody = await dsAuthRes.json().catch(() => ({}));
       const dsToken = dsAuthBody.token;
       if (!dsAuthRes.ok || !dsToken) throw new Error(`App externo recusou o login (${dsAuthRes.status})`);
-      stEl.innerHTML = `<span class="dm-spin"></span> 🏆 ${questName}: enviando progresso...`;
+      dmUpdateShimmer(stEl, `🏆 ${questName}: enviando progresso...`);
       const progRes = await cspFetch(`https://${applicationId}.discordsays.com/.proxy/acf/quest/progress`, {
         headers: {
           'Content-Type': 'application/json',
@@ -740,11 +1018,11 @@
       return;
     }
     if (!quest.isEnrolled) {
-      stEl.innerHTML = `<span class="dm-spin"></span> 📋 Inscrevendo...`;
+      dmUpdateShimmer(stEl, `📋 Inscrevendo...`);
       await enrollQuest(quest.id);
       await sleep(1500);
     }
-    stEl.innerHTML = `<span class="dm-spin"></span> 🔧 ${quest.name} (${taskName})... ${progressBar(secondsDone, secondsNeeded)}`;
+    dmUpdateShimmer(stEl, `🔧 ${quest.name} (${taskName})...`, progressBar(secondsDone, secondsNeeded));
     if (taskName === 'WATCH_VIDEO' || taskName === 'WATCH_VIDEO_ON_MOBILE')
       await resolveWatchVideo(quest, secondsNeeded, secondsDone, stEl, shouldStop);
     else if (taskName === 'PLAY_ON_DESKTOP')
@@ -764,7 +1042,7 @@
         shouldStop,
       );
     if (!shouldStop()) {
-      stEl.innerHTML = `<span class="dm-spin"></span> 🎁 Resgatando...`;
+      dmUpdateShimmer(stEl, `🎁 Resgatando...`);
       await claimQuest(quest.id);
       await sleep(1000);
     }
@@ -777,7 +1055,7 @@
 
   const css = document.createElement('style');
   css.id = '__dm-css';
-  css.textContent = `@keyframes __dmFI{from{opacity:0}to{opacity:1}}@keyframes __dmSI{from{opacity:0;transform:scale(.98) translateY(4px)}to{opacity:1;transform:none}}@keyframes __dmSpin{to{transform:rotate(360deg)}}#__dm-overlay{position:fixed;inset:0;z-index:10000;background:hsl(0 0% 0%/.7);display:flex;align-items:center;justify-content:center;animation:__dmFI .15s ease}#__dm-modal{width:580px;max-width:95vw;max-height:85vh;background:var(--background-base-lower);border-radius:var(--radius-md,12px);box-shadow:var(--shadow-high);display:flex;flex-direction:column;animation:__dmSI .2s ease;font-family:var(--font-primary);color:var(--text-default);overflow:hidden}.dm-hdr{padding:var(--space-md,16px);background:var(--background-base-low);border-bottom:1px solid var(--border-subtle);display:flex;align-items:center;justify-content:space-between;flex-shrink:0}.dm-hdr h2{margin:0;font-size:16px;font-weight:var(--font-weight-bold,700);line-height:20px;font-family:var(--font-primary);color:var(--text-strong)}.dm-hdr .dm-close{width:32px;height:32px;background:var(--background-mod-subtle);border:none;border-radius:50%;cursor:pointer;padding:0;color:var(--icon-subtle);display:flex;align-items:center;justify-content:center;transition:background .15s,color .15s;flex-shrink:0}.dm-hdr .dm-close:hover{background:var(--background-mod-normal);color:var(--icon-strong)}.dm-body{padding:var(--space-md,16px);overflow-y:auto;flex:1}.dm-body::-webkit-scrollbar{width:4px}.dm-body::-webkit-scrollbar-thumb{background:var(--background-mod-strong);border-radius:4px}.dm-footer{padding:var(--space-md,16px);background:var(--background-base-low);border-top:1px solid var(--border-subtle);display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-shrink:0}.dm-tabs{display:flex;gap:var(--space-xs,8px);margin-bottom:var(--space-md,16px);flex-wrap:wrap}.dm-tab{background:var(--background-mod-subtle);border:none;border-radius:var(--radius-sm,8px);cursor:pointer;font-family:var(--font-primary);font-size:14px;font-weight:var(--font-weight-medium,500);color:var(--text-muted);padding:6px 12px;height:32px;transition:background .1s,color .1s;display:flex;align-items:center}.dm-tab:hover{background:var(--background-mod-normal);color:var(--text-default)}.dm-tab.dm-on{background:var(--background-mod-normal);color:var(--text-strong)}.dm-label{display:block;font-size:12px;font-weight:var(--font-weight-bold,700);letter-spacing:.02em;text-transform:uppercase;color:var(--text-muted);margin-bottom:var(--space-xs,8px);font-family:var(--font-primary)}.dm-input,.dm-select{width:100%;box-sizing:border-box;background:var(--input-background,var(--background-mod-strong));border:1px solid var(--border-subtle);border-radius:var(--radius-sm,8px);padding:10px var(--space-sm,12px);color:var(--text-default);font-size:16px;font-weight:var(--font-weight-medium,500);font-family:var(--font-primary);outline:none;transition:border-color .15s;margin-bottom:var(--space-md,16px)}.dm-input::placeholder{color:var(--input-placeholder-text-default,var(--text-muted))}.dm-input:hover{border-color:var(--input-border-hover,var(--border-strong))}.dm-input:focus,.dm-select:focus{border-color:var(--brand-500)}.dm-hint{font-size:14px;line-height:20px;color:var(--text-muted);margin-top:-12px;margin-bottom:var(--space-md,16px);font-family:var(--font-primary)}.dm-btn{min-height:32px;min-width:60px;border:none;border-radius:var(--radius-sm,8px);cursor:pointer;font-family:var(--font-primary);font-size:14px;font-weight:var(--font-weight-medium,500);line-height:16px;padding:2px 12px;box-sizing:border-box;transition:background-color .2s,color .2s}.dm-btn:disabled{opacity:.5;cursor:not-allowed}.dm-btn.dm-ghost{background:transparent;color:var(--text-link,var(--brand-500));min-width:auto;padding:2px 4px}.dm-btn.dm-ghost:hover:not(:disabled){text-decoration:underline}.dm-btn.dm-danger{background:var(--control-critical-primary-background-default,var(--red-new-50,#da373c));color:var(--white,#fff)}.dm-btn.dm-danger:hover:not(:disabled){background:var(--control-critical-primary-background-hover,var(--red-new-60,#a12828))}.dm-btn.dm-stop{background:var(--background-mod-normal,#4e4f54);color:var(--text-default,#dbdee1)}.dm-btn.dm-stop:hover:not(:disabled){background:var(--background-mod-muted,#727379)}.dm-btn.dm-brand{background:var(--brand-500,#5865f2);color:var(--white,#fff)}.dm-btn.dm-brand:hover:not(:disabled){background:var(--brand-560,#4752c4)}.dm-list{max-height:300px;overflow-y:auto;margin:0 -16px}.dm-list::-webkit-scrollbar{width:4px}.dm-list::-webkit-scrollbar-thumb{background:var(--background-mod-strong);border-radius:4px}.dm-fi{align-items:center;border-radius:0;display:flex;gap:var(--space-sm,12px);padding:var(--space-xs,8px) var(--space-md,16px);cursor:pointer;transition:background-color .1s}.dm-fi:hover{background-color:var(--background-mod-muted);color:var(--text-strong)}.dm-fi.dm-sel{background-color:hsl(var(--red-new-50-hsl,0 64% 55%)/.1)}.dm-av{flex-shrink:0;width:32px;height:32px;border-radius:50%;overflow:hidden;background:var(--background-mod-strong);display:flex;align-items:center;justify-content:center;font-weight:var(--font-weight-bold,700);font-size:13px;color:var(--text-strong)}.dm-av img{width:100%;height:100%;object-fit:cover}.dm-av.dm-sq{border-radius:var(--radius-sm,8px)}.dm-fn{flex:1;min-width:0;font-size:15px;font-weight:var(--font-weight-medium,500);color:var(--text-default);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.dm-fn small{font-size:13px;font-weight:400;color:var(--text-muted);margin-left:2px}.dm-chk{flex-shrink:0;width:20px;height:20px;border-radius:50%;border:2px solid var(--border-subtle);display:flex;align-items:center;justify-content:center;transition:all .15s}.dm-fi.dm-sel .dm-chk{background:var(--red-new-50,#da373c);border-color:transparent}.dm-qi.dm-sel .dm-chk{background:var(--brand-500,#5865f2);border-color:transparent}.dm-search{display:flex;align-items:center;gap:var(--space-xs,8px);background:var(--background-mod-strong);border-radius:var(--radius-sm,8px);padding:0 var(--space-sm,12px);margin-bottom:var(--space-xs,8px);border:1px solid var(--border-subtle);transition:border-color .15s}.dm-search:focus-within{border-color:var(--brand-500)}.dm-search input{flex:1;background:none;border:none;outline:none;font-family:var(--font-primary);font-size:14px;color:var(--text-default);padding:9px 0}.dm-search input::placeholder{color:var(--input-placeholder-text-default,var(--text-muted))}.dm-section{padding:var(--space-md,16px) var(--space-md,16px) var(--space-xs,8px);margin:0 -16px;font-size:11px;font-weight:var(--font-weight-bold,700);letter-spacing:.06em;text-transform:uppercase;color:var(--channels-default,var(--text-muted));font-family:var(--font-primary)}.dm-st{margin-top:var(--space-sm,12px);padding:var(--space-xs,8px) var(--space-sm,12px);background:var(--background-mod-subtle);border-radius:var(--radius-sm,8px);font-size:13px;color:var(--text-muted);max-height:80px;overflow-y:auto;line-height:1.5;font-family:var(--font-primary)}.dm-st.dm-ok{color:var(--text-positive,#23a559)}.dm-st.dm-err{color:var(--text-danger,#f23f43)}.dm-pbar{width:100%;height:8px;background:var(--background-mod-strong,#1e1f22);border-radius:4px;overflow:hidden;margin-top:6px}.dm-pfill{height:100%;background:var(--brand-500,#5865f2);border-radius:4px;transition:width .5s ease}.dm-st.dm-ok .dm-pfill{background:var(--text-positive,#23a559)}.dm-spin{display:inline-block;width:12px;height:12px;border:2px solid currentColor;border-top-color:transparent;border-radius:50%;animation:__dmSpin .6s linear infinite;vertical-align:middle;margin-right:4px}.dm-empty{text-align:center;padding:40px 0;color:var(--text-muted);font-size:14px;font-family:var(--font-primary)}.dm-counter{flex:1;font-size:14px;color:var(--text-muted);font-family:var(--font-primary)}.dm-row-hidden{display:none}.dm-qi{align-items:center;border-radius:0;display:flex;gap:var(--space-sm,12px);padding:var(--space-xs,8px) var(--space-md,16px);cursor:pointer;transition:background-color .1s}.dm-qi:hover{background-color:var(--background-mod-muted)}.dm-qi.dm-sel{background-color:hsl(235 86% 65%/.08)}.dm-qicon{flex-shrink:0;width:40px;height:40px;border-radius:var(--radius-sm,8px);overflow:hidden;background:var(--background-mod-strong);display:flex;align-items:center;justify-content:center;font-size:18px}.dm-qicon img{width:100%;height:100%;object-fit:cover}.dm-qinfo{flex:1;min-width:0}.dm-qname{font-size:14px;font-weight:var(--font-weight-medium,500);color:var(--text-default);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.dm-qsub{font-size:12px;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.dm-qreward{flex-shrink:0;font-size:13px;font-weight:var(--font-weight-semibold,600);color:var(--brand-500,#5865f2);white-space:nowrap}.dm-qtag{display:inline-block;font-size:10px;font-weight:var(--font-weight-bold,700);padding:1px 4px;border-radius:3px;margin-left:4px;vertical-align:middle}.dm-qtag-desktop{background:var(--background-mod-normal);color:var(--text-muted)}.dm-msg{padding:8px 16px;border-bottom:1px solid var(--border-subtle);cursor:pointer;transition:background .1s}.dm-msg:hover{background:var(--background-mod-muted)}.dm-msg-last{border-bottom:none}.dm-msg-top{display:flex;align-items:center;gap:8px;margin-bottom:4px}.dm-msg-author{font-weight:var(--font-weight-semibold,600);color:var(--text-strong);font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.dm-msg-time{font-size:11px;color:var(--text-muted);white-space:nowrap}.dm-msg-loc{font-size:11px;color:var(--text-link);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-left:auto}.dm-msg-content{font-size:14px;color:var(--text-default);line-height:1.4;word-wrap:break-word;white-space:pre-wrap}.dm-msg-tag{color:var(--text-muted);background:var(--background-mod-normal);padding:1px 4px;border-radius:3px;font-size:11px;margin-left:4px;vertical-align:middle}.dm-paginate{display:flex;justify-content:center;align-items:center;gap:8px;margin-top:12px;padding-bottom:4px;}.dm-paginate span{font-size:13px;color:var(--text-muted);font-family:var(--font-primary)}.dm-profile-card{background:var(--background-base-lower);border-radius:8px;overflow:hidden;border:1px solid var(--border-subtle)}.dm-profile-banner{height:120px;background-size:cover;background-position:center top;background-color:var(--background-mod-strong);flex-shrink:0}.dm-profile-header{position:relative;padding:0 16px 16px;margin-top:-40px;display:flex;flex-direction:column;gap:8px}.dm-profile-avatar-wrapper{position:relative;width:80px;height:80px;flex-shrink:0;margin-bottom:4px;z-index:2;overflow:visible}.dm-profile-avatar{width:100%;height:100%;border-radius:50%;border:6px solid var(--background-base-lower,#1e1f22);overflow:hidden;background:var(--background-mod-strong);position:relative;z-index:1}.dm-profile-avatar img{width:100%;height:100%;object-fit:cover}.dm-profile-deco{position:absolute;top:0.6px;left:-1px;width:96px;height:96px;pointer-events:none;z-index:3}.dm-profile-deco img{width:100%;height:100%;object-fit:contain;display:block}.dm-profile-toprow{display:flex;align-items:flex-end;justify-content:space-between;gap:10px}.dm-profile-badges{display:flex;flex-wrap:wrap;gap:6px;justify-content:flex-end;padding-bottom:6px}.dm-profile-badge{width:24px;height:24px;border-radius:50%;background:var(--background-mod-subtle);overflow:hidden;position:relative;cursor:pointer;box-shadow:0 0 0 3px var(--background-base-lower)}.dm-profile-badge img{width:100%;height:100%;object-fit:cover}.dm-profile-badge:hover::after{content:attr(data-tip);position:absolute;bottom:110%;left:50%;transform:translateX(-50%);background:var(--background-floating);color:var(--text-strong);padding:4px 8px;border-radius:4px;font-size:11px;white-space:nowrap;z-index:10;box-shadow:var(--shadow-high)}.dm-profile-names{display:flex;flex-direction:column;margin-top:10px}.dm-profile-gname{font-size:18px;font-weight:var(--font-weight-bold,700);color:var(--text-strong);display:flex;align-items:center;gap:6px}.dm-profile-tag{font-size:11px;background:var(--background-mod-subtle);padding:1px 4px;border-radius:3px;color:var(--text-muted);vertical-align:middle;font-weight:500}.dm-profile-uname{font-size:13px;color:var(--text-muted);margin-top:2px}.dm-profile-pronouns{font-size:12px;color:var(--text-muted);margin-top:4px;font-style:italic}.dm-profile-bio{font-size:13px;color:var(--text-default);white-space:pre-wrap;line-height:1.5;word-wrap:break-word}.dm-profile-section{margin-top:12px;padding:10px 12px;background:var(--background-mod-subtle);border-radius:8px}.dm-profile-section-title{font-size:10px;font-weight:var(--font-weight-bold,700);text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:8px}.dm-conn-list{display:flex;flex-direction:column;gap:4px}.dm-conn-item{background:var(--background-base-lower);padding:6px 10px;border-radius:6px;font-size:13px;display:flex;align-items:center;gap:8px;color:var(--text-default)}.dm-conn-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}.dm-conn-type{color:var(--text-muted);text-transform:capitalize;flex-shrink:0}.dm-conn-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.dm-conn-verified{flex-shrink:0;display:flex;align-items:center;color:var(--text-positive,#23a559);font-size:11px}.dm-profile-infos{display:flex;flex-direction:column;gap:4px;font-size:13px;color:var(--text-muted)}.dm-profile-info-item{display:flex;align-items:center;gap:8px;padding:2px 0}.dm-profile-actions{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}`;
+  css.textContent = `@keyframes __dmFI{from{opacity:0}to{opacity:1}}@keyframes __dmSI{from{opacity:0;transform:scale(.98) translateY(4px)}to{opacity:1;transform:none}}@keyframes __dmSpin{to{transform:rotate(360deg)}}@keyframes __dmShimmer{0%{background-position:120% 50%}100%{background-position:-20% 50%}}#__dm-overlay{position:fixed;inset:0;z-index:10000;background:hsl(0 0% 0%/.7);display:flex;align-items:center;justify-content:center;animation:__dmFI .15s ease}#__dm-modal{width:580px;max-width:95vw;max-height:85vh;background:var(--background-base-lower);border-radius:var(--radius-md,12px);box-shadow:var(--shadow-high);display:flex;flex-direction:column;animation:__dmSI .2s ease;font-family:var(--font-primary);color:var(--text-default);overflow:hidden}.dm-hdr{padding:var(--space-md,16px);background:var(--background-base-low);border-bottom:1px solid var(--border-subtle);display:flex;align-items:center;justify-content:space-between;flex-shrink:0}.dm-hdr h2{margin:0;font-size:16px;font-weight:var(--font-weight-bold,700);line-height:20px;font-family:var(--font-primary);color:var(--text-strong)}.dm-hdr .dm-close{width:32px;height:32px;background:var(--background-mod-subtle);border:none;border-radius:50%;cursor:pointer;padding:0;color:var(--icon-subtle);display:flex;align-items:center;justify-content:center;transition:background .15s,color .15s;flex-shrink:0}.dm-hdr .dm-close:hover{background:var(--background-mod-normal);color:var(--icon-strong)}.dm-body{padding:var(--space-md,16px);overflow-y:auto;flex:1}.dm-body::-webkit-scrollbar{width:4px}.dm-body::-webkit-scrollbar-thumb{background:var(--background-mod-strong);border-radius:4px}.dm-footer{padding:var(--space-md,16px);background:var(--background-base-low);border-top:1px solid var(--border-subtle);display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-shrink:0}.dm-tabs{display:flex;gap:var(--space-xs,8px);margin-bottom:var(--space-md,16px);flex-wrap:wrap}.dm-tab{background:var(--background-mod-subtle);border:none;border-radius:var(--radius-sm,8px);cursor:pointer;font-family:var(--font-primary);font-size:14px;font-weight:var(--font-weight-medium,500);color:var(--text-muted);padding:6px 12px;height:32px;transition:background .1s,color .1s;display:flex;align-items:center}.dm-tab:hover{background:var(--background-mod-normal);color:var(--text-default)}.dm-tab.dm-on{background:var(--background-mod-normal);color:var(--text-strong)}.dm-label{display:block;font-size:12px;font-weight:var(--font-weight-bold,700);letter-spacing:.02em;text-transform:uppercase;color:var(--text-muted);margin-bottom:var(--space-xs,8px);font-family:var(--font-primary)}.dm-input,.dm-select{width:100%;box-sizing:border-box;background:var(--input-background,var(--background-mod-strong));border:1px solid var(--border-subtle);border-radius:var(--radius-sm,8px);padding:10px var(--space-sm,12px);color:var(--text-default);font-size:16px;font-weight:var(--font-weight-medium,500);font-family:var(--font-primary);outline:none;transition:border-color .15s;margin-bottom:var(--space-md,16px)}.dm-input::placeholder{color:var(--input-placeholder-text-default,var(--text-muted))}.dm-input:hover{border-color:var(--input-border-hover,var(--border-strong))}.dm-input:focus,.dm-select:focus{border-color:var(--brand-500)}.dm-hint{font-size:14px;line-height:20px;color:var(--text-muted);margin-top:-12px;margin-bottom:var(--space-md,16px);font-family:var(--font-primary)}.dm-btn{min-height:32px;min-width:60px;border:none;border-radius:var(--radius-sm,8px);cursor:pointer;font-family:var(--font-primary);font-size:14px;font-weight:var(--font-weight-medium,500);line-height:16px;padding:2px 12px;box-sizing:border-box;transition:background-color .2s,color .2s}.dm-btn:disabled{opacity:.5;cursor:not-allowed}.dm-btn.dm-ghost{background:transparent;color:var(--text-link,var(--brand-500));min-width:auto;padding:2px 4px}.dm-btn.dm-ghost:hover:not(:disabled){text-decoration:underline}.dm-btn.dm-danger{background:var(--control-critical-primary-background-default,var(--red-new-50,#da373c));color:var(--white,#fff)}.dm-btn.dm-danger:hover:not(:disabled){background:var(--control-critical-primary-background-hover,var(--red-new-60,#a12828))}.dm-btn.dm-stop{background:var(--background-mod-normal,#4e4f54);color:var(--text-default,#dbdee1)}.dm-btn.dm-stop:hover:not(:disabled){background:var(--background-mod-muted,#727379)}.dm-btn.dm-brand{background:var(--brand-500,#5865f2);color:var(--white,#fff)}.dm-btn.dm-brand:hover:not(:disabled){background:var(--brand-560,#4752c4)}.dm-list{max-height:300px;overflow-y:auto;margin:0 -16px}.dm-list::-webkit-scrollbar{width:4px}.dm-list::-webkit-scrollbar-thumb{background:var(--background-mod-strong);border-radius:4px}.dm-fi{align-items:center;border-radius:0;display:flex;gap:var(--space-sm,12px);padding:var(--space-xs,8px) var(--space-md,16px);cursor:pointer;transition:background-color .1s}.dm-fi:hover{background-color:var(--background-mod-muted);color:var(--text-strong)}.dm-fi.dm-sel{background-color:hsl(var(--red-new-50-hsl,0 64% 55%)/.1)}.dm-av{flex-shrink:0;width:32px;height:32px;border-radius:50%;overflow:hidden;background:var(--background-mod-strong);display:flex;align-items:center;justify-content:center;font-weight:var(--font-weight-bold,700);font-size:13px;color:var(--text-strong)}.dm-av img{width:100%;height:100%;object-fit:cover}.dm-av.dm-sq{border-radius:var(--radius-sm,8px)}.dm-fn{flex:1;min-width:0;font-size:15px;font-weight:var(--font-weight-medium,500);color:var(--text-default);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.dm-fn small{font-size:13px;font-weight:400;color:var(--text-muted);margin-left:2px}.dm-chk{flex-shrink:0;width:20px;height:20px;border-radius:50%;border:2px solid var(--border-subtle);display:flex;align-items:center;justify-content:center;transition:all .15s}.dm-fi.dm-sel .dm-chk{background:var(--red-new-50,#da373c);border-color:transparent}.dm-qi.dm-sel .dm-chk{background:var(--brand-500,#5865f2);border-color:transparent}.dm-search{display:flex;align-items:center;gap:var(--space-xs,8px);background:var(--background-mod-strong);border-radius:var(--radius-sm,8px);padding:0 var(--space-sm,12px);margin-bottom:var(--space-xs,8px);border:1px solid var(--border-subtle);transition:border-color .15s}.dm-search:focus-within{border-color:var(--brand-500)}.dm-search input{flex:1;background:none;border:none;outline:none;font-family:var(--font-primary);font-size:14px;color:var(--text-default);padding:9px 0}.dm-search input::placeholder{color:var(--input-placeholder-text-default,var(--text-muted))}.dm-section{padding:var(--space-md,16px) var(--space-md,16px) var(--space-xs,8px);margin:0 -16px;font-size:11px;font-weight:var(--font-weight-bold,700);letter-spacing:.06em;text-transform:uppercase;color:var(--channels-default,var(--text-muted));font-family:var(--font-primary)}.dm-st{margin-top:var(--space-sm,12px);padding:var(--space-xs,8px) var(--space-sm,12px);background:var(--background-mod-subtle);border-radius:var(--radius-sm,8px);font-size:13px;color:var(--text-muted);max-height:80px;overflow-y:auto;line-height:1.5;font-family:var(--font-primary)}.dm-st.dm-ok{color:var(--text-positive,#23a559)}.dm-st.dm-err{color:var(--text-danger,#f23f43)}.dm-pbar{width:100%;height:8px;background:var(--background-mod-strong,#1e1f22);border-radius:4px;overflow:hidden;margin-top:6px}.dm-pfill{height:100%;background:var(--brand-500,#5865f2);border-radius:4px;transition:width .5s ease}.dm-st.dm-ok .dm-pfill{background:var(--text-positive,#23a559)}.dm-spin{display:inline-block;width:12px;height:12px;border:2px solid currentColor;border-top-color:transparent;border-radius:50%;animation:__dmSpin .6s linear infinite;vertical-align:middle;margin-right:4px}.dm-empty{text-align:center;padding:40px 0;color:var(--text-muted);font-size:14px;font-family:var(--font-primary)}.dm-counter{flex:1;font-size:14px;color:var(--text-muted);font-family:var(--font-primary)}.dm-row-hidden{display:none}.dm-qi{align-items:center;border-radius:0;display:flex;gap:var(--space-sm,12px);padding:var(--space-xs,8px) var(--space-md,16px);cursor:pointer;transition:background-color .1s}.dm-qi:hover{background-color:var(--background-mod-muted)}.dm-qi.dm-sel{background-color:hsl(235 86% 65%/.08)}.dm-qicon{flex-shrink:0;width:40px;height:40px;border-radius:var(--radius-sm,8px);overflow:hidden;background:var(--background-mod-strong);display:flex;align-items:center;justify-content:center;font-size:18px}.dm-qicon img{width:100%;height:100%;object-fit:cover}.dm-qinfo{flex:1;min-width:0}.dm-qname{font-size:14px;font-weight:var(--font-weight-medium,500);color:var(--text-default);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.dm-qsub{font-size:12px;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.dm-qreward{flex-shrink:0;font-size:13px;font-weight:var(--font-weight-semibold,600);color:var(--brand-500,#5865f2);white-space:nowrap}.dm-qtag{display:inline-block;font-size:10px;font-weight:var(--font-weight-bold,700);padding:1px 4px;border-radius:3px;margin-left:4px;vertical-align:middle}.dm-qtag-desktop{background:var(--background-mod-normal);color:var(--text-muted)}.dm-msg{padding:8px 16px;border-bottom:1px solid var(--border-subtle);cursor:pointer;transition:background .1s}.dm-msg:hover{background:var(--background-mod-muted)}.dm-msg-last{border-bottom:none}.dm-msg-top{display:flex;align-items:center;gap:8px;margin-bottom:4px}.dm-msg-author{font-weight:var(--font-weight-semibold,600);color:var(--text-strong);font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.dm-msg-time{font-size:11px;color:var(--text-muted);white-space:nowrap}.dm-msg-loc{font-size:11px;color:var(--text-link);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-left:auto}.dm-msg-content{font-size:14px;color:var(--text-default);line-height:1.4;word-wrap:break-word;white-space:pre-wrap}.dm-msg-tag{color:var(--text-muted);background:var(--background-mod-normal);padding:1px 4px;border-radius:3px;font-size:11px;margin-left:4px;vertical-align:middle}.dm-paginate{display:flex;justify-content:center;align-items:center;gap:8px;margin-top:12px;padding-bottom:4px;}.dm-paginate span{font-size:13px;color:var(--text-muted);font-family:var(--font-primary)}.dm-profile-card{background:var(--background-base-lower);border-radius:8px;overflow:hidden;border:1px solid var(--border-subtle)}.dm-profile-banner{height:120px;background-size:cover;background-position:center top;background-color:var(--background-mod-strong);flex-shrink:0}.dm-profile-header{position:relative;padding:0 16px 16px;margin-top:-40px;display:flex;flex-direction:column;gap:8px}.dm-profile-avatar-wrapper{position:relative;width:80px;height:80px;flex-shrink:0;margin-bottom:4px;z-index:2;overflow:visible}.dm-profile-avatar{width:100%;height:100%;border-radius:50%;border:6px solid var(--background-base-lower,#1e1f22);overflow:hidden;background:var(--background-mod-strong);position:relative;z-index:1}.dm-profile-avatar img{width:100%;height:100%;object-fit:cover}.dm-profile-deco{position:absolute;top:0.6px;left:-1px;width:96px;height:96px;pointer-events:none;z-index:3}.dm-profile-deco img{width:100%;height:100%;object-fit:contain;display:block}.dm-profile-toprow{display:flex;align-items:flex-end;justify-content:space-between;gap:10px}.dm-profile-badges{display:flex;flex-wrap:wrap;gap:6px;justify-content:flex-end;padding-bottom:6px}.dm-profile-badge{width:24px;height:24px;border-radius:50%;background:var(--background-mod-subtle);overflow:hidden;position:relative;cursor:pointer;box-shadow:0 0 0 3px var(--background-base-lower)}.dm-profile-badge img{width:100%;height:100%;object-fit:cover}.dm-profile-badge:hover::after{content:attr(data-tip);position:absolute;bottom:110%;left:50%;transform:translateX(-50%);background:var(--background-floating);color:var(--text-strong);padding:4px 8px;border-radius:4px;font-size:11px;white-space:nowrap;z-index:10;box-shadow:var(--shadow-high)}.dm-profile-names{display:flex;flex-direction:column;margin-top:10px}.dm-profile-gname{font-size:18px;font-weight:var(--font-weight-bold,700);color:var(--text-strong);display:flex;align-items:center;gap:6px}.dm-profile-tag{font-size:11px;background:var(--background-mod-subtle);padding:1px 4px;border-radius:3px;color:var(--text-muted);vertical-align:middle;font-weight:500}.dm-profile-uname{font-size:13px;color:var(--text-muted);margin-top:2px}.dm-profile-pronouns{font-size:12px;color:var(--text-muted);margin-top:4px;font-style:italic}.dm-profile-bio{font-size:13px;color:var(--text-default);white-space:pre-wrap;line-height:1.5;word-wrap:break-word}.dm-profile-section{margin-top:12px;padding:10px 12px;background:var(--background-mod-subtle);border-radius:8px}.dm-profile-section-title{font-size:10px;font-weight:var(--font-weight-bold,700);text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:8px}.dm-conn-list{display:flex;flex-direction:column;gap:4px}.dm-conn-item{background:var(--background-base-lower);padding:6px 10px;border-radius:6px;font-size:13px;display:flex;align-items:center;gap:8px;color:var(--text-default)}.dm-conn-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}.dm-conn-type{color:var(--text-muted);text-transform:capitalize;flex-shrink:0}.dm-conn-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.dm-conn-verified{flex-shrink:0;display:flex;align-items:center;color:var(--text-positive,#23a559);font-size:11px}.dm-profile-infos{display:flex;flex-direction:column;gap:4px;font-size:13px;color:var(--text-muted)}.dm-profile-info-item{display:flex;align-items:center;gap:8px;padding:2px 0}.dm-profile-actions{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}#__dm-profile-overlay{position:fixed;inset:0;z-index:10001;background:hsl(0 0% 0%/.75);display:flex;align-items:center;justify-content:center;animation:__dmFI .15s ease}.dm-guild-popup-modal{width:720px;max-width:95vw;max-height:90vh;background:var(--background-base-lower);border-radius:var(--radius-md,12px);box-shadow:var(--shadow-high);display:flex;flex-direction:column;animation:__dmSI .2s ease;font-family:var(--font-primary);color:var(--text-default);overflow:hidden}.dm-guild-profile-banner-wrap{height:140px;overflow:hidden;background:var(--background-mod-strong);position:relative}.dm-profile-banner-img{width:100%;height:140px;object-fit:cover;display:block}.dm-role-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}.dm-role-chip{font-size:12px;padding:2px 8px;border-radius:12px;border:1px solid var(--border-subtle);background:var(--background-mod-subtle)}.dm-owner-badge{font-size:10px;font-weight:700;background:var(--brand-500);color:#fff;padding:2px 6px;border-radius:4px;margin-left:6px;vertical-align:middle}.dm-srv-group-hdr{padding:8px 12px 4px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--text-muted);display:flex;align-items:center;gap:8px;border-top:1px solid var(--border-subtle);margin-top:4px}.dm-srv-group-hdr:first-child{border-top:none;margin-top:0}.dm-srv-group-hdr .dm-role-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}.dm-srv-group-hdr small{font-weight:500;opacity:.85}.dm-srv-loadmore{padding:16px 12px 20px;text-align:center;border-top:1px solid var(--border-subtle)}.dm-shimmer,.dm-srv-shimmer,.dm-shimmer-live{display:inline-block;max-width:100%;font-size:13px;font-weight:600;letter-spacing:.03em;line-height:1.45;word-break:break-word;background:linear-gradient(90deg,#5c5c5c 0%,#5c5c5c 38%,#ececec 50%,#5c5c5c 62%,#5c5c5c 100%);background-size:300% 100%;-webkit-background-clip:text;background-clip:text;color:transparent;animation:__dmShimmer 2.4s ease-in-out infinite}.dm-shimmer-live{will-change:background-position}.dm-empty .dm-shimmer{font-size:14px;display:inline-block}.dm-st .dm-shimmer{display:block;width:100%;font-size:inherit;font-weight:500}.dm-load-row{display:block;width:100%}.dm-load-extra{display:block;width:100%;margin-top:6px}.dm-shimmer.dm-idle,.dm-srv-shimmer.dm-idle{animation:none;background:#6d6d6d;-webkit-background-clip:unset;background-clip:unset;color:#6d6d6d;opacity:.85}.dm-srv-load-sentinel{height:1px;width:100%}.dm-srv-mlist-wrap .dm-list{max-height:280px;overflow-y:auto}.dm-srv-overview-card{background:var(--background-mod-subtle);border-radius:8px;padding:12px;border:1px solid var(--border-subtle)}.dm-srv-overview-top{display:flex;gap:12px;align-items:center}.dm-srv-seg .dm-tab{flex:1;justify-content:center}.dm-role-dot{width:12px;height:12px;border-radius:50%;flex-shrink:0}.dm-global-fold summary{list-style:none}.dm-global-fold summary::-webkit-details-marker{display:none}`;
 
   const IC_X = `<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M18.4 4L12 10.4L5.6 4L4 5.6L10.4 12L4 18.4L5.6 20L12 13.6L18.4 20L20 18.4L13.6 12L20 5.6L18.4 4Z"/></svg>`;
   const IC_CHECK = `<svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5,5.5 4,8 8.5,2"/></svg>`;
@@ -792,6 +1070,7 @@
   const dmNavBtns = () =>
     [document.getElementById('__dm-navbtn'), document.getElementById('__dm-topbtn')].filter(Boolean);
   const destroy = () => {
+    cancelMemberHydrator();
     if (dmRunning) {
       overlay.style.display = 'none';
       dmNavBtns().forEach((btn) => {
@@ -822,13 +1101,22 @@
     document.body.appendChild(overlay);
     render();
   };
+  let closeMemberPopup = () => {};
+  let cancelMemberHydrator = () => {};
+
   overlay.addEventListener('click', (e) => {
     if (e.target === overlay) destroy();
   });
   document.addEventListener('keydown', function esc(e) {
-    if (e.key === 'Escape' && document.getElementById('__dm-overlay')) {
-      destroy();
-      document.removeEventListener('keydown', esc);
+    if (e.key === 'Escape') {
+      if (document.getElementById('__dm-profile-overlay')) {
+        closeMemberPopup();
+        return;
+      }
+      if (document.getElementById('__dm-overlay')) {
+        destroy();
+        document.removeEventListener('keydown', esc);
+      }
     }
   });
   document.addEventListener('keydown', (e) => {
@@ -862,6 +1150,7 @@
       src: ['__dm-t7', '__dm-panel-src', '__dm-footer-src'],
       usr: ['__dm-t8', '__dm-panel-usr', '__dm-footer-usr'],
       exp: ['__dm-t9', '__dm-panel-exp', '__dm-footer-exp'],
+      srv: ['__dm-t10', '__dm-panel-srv', '__dm-footer-srv'],
     };
     for (const [name, [btnId, panelId, footerId]] of Object.entries(tabs)) {
       const btn = $(btnId);
@@ -875,7 +1164,8 @@
 
   const render = (tab = 'msgs') => {
     document.head.appendChild(css);
-    modal.innerHTML = `${hdr('Gerenciar')}<div class="dm-body"><div class="dm-tabs"><button class="dm-tab ${tab === 'msgs' ? 'dm-on' : ''}" id="__dm-t1">🗑️ Mensagens</button><button class="dm-tab ${tab === 'frd' ? 'dm-on' : ''}" id="__dm-t2">👥 Amigos</button><button class="dm-tab ${tab === 'qst' ? 'dm-on' : ''}" id="__dm-t3">🎯 Missões</button><button class="dm-tab ${tab === 'mut' ? 'dm-on' : ''}" id="__dm-t4">🔇 Silenciar</button><button class="dm-tab ${tab === 'lev' ? 'dm-on' : ''}" id="__dm-t5">🚪 Sair</button><button class="dm-tab ${tab === 'rd' ? 'dm-on' : ''}" id="__dm-t6">📖 Lido</button><button class="dm-tab ${tab === 'src' ? 'dm-on' : ''}" id="__dm-t7">🔍 Pesquisar</button><button class="dm-tab ${tab === 'usr' ? 'dm-on' : ''}" id="__dm-t8">👤 Usuário</button><button class="dm-tab ${tab === 'exp' ? 'dm-on' : ''}" id="__dm-t9">📥 Exportação</button></div><div id="__dm-panel-msgs" style="display:${tab === 'msgs' ? '' : 'none'}"></div><div id="__dm-panel-frd" style="display:${tab === 'frd' ? '' : 'none'}"></div><div id="__dm-panel-qst" style="display:${tab === 'qst' ? '' : 'none'}"></div><div id="__dm-panel-mut" style="display:${tab === 'mut' ? '' : 'none'}"></div><div id="__dm-panel-lev" style="display:${tab === 'lev' ? '' : 'none'}"></div><div id="__dm-panel-rd" style="display:${tab === 'rd' ? '' : 'none'}"></div><div id="__dm-panel-src" style="display:${tab === 'src' ? '' : 'none'}"></div><div id="__dm-panel-usr" style="display:${tab === 'usr' ? '' : 'none'}"></div><div id="__dm-panel-exp" style="display:${tab === 'exp' ? '' : 'none'}"></div></div><div class="dm-footer" id="__dm-footer-msgs" style="display:${tab === 'msgs' ? '' : 'none'}"></div><div class="dm-footer" id="__dm-footer-frd" style="display:${tab === 'frd' ? '' : 'none'}"></div><div class="dm-footer" id="__dm-footer-qst" style="display:${tab === 'qst' ? '' : 'none'}"></div><div class="dm-footer" id="__dm-footer-mut" style="display:${tab === 'mut' ? '' : 'none'}"></div><div class="dm-footer" id="__dm-footer-lev" style="display:${tab === 'lev' ? '' : 'none'}"></div><div class="dm-footer" id="__dm-footer-rd" style="display:${tab === 'rd' ? '' : 'none'}"></div><div class="dm-footer" id="__dm-footer-src" style="display:${tab === 'src' ? '' : 'none'}"></div><div class="dm-footer" id="__dm-footer-usr" style="display:${tab === 'usr' ? '' : 'none'}"></div><div class="dm-footer" id="__dm-footer-exp" style="display:${tab === 'exp' ? '' : 'none'}"></div>`;
+    modal.innerHTML = `${hdr('Gerenciar')}<div class="dm-body"><div class="dm-tabs"><button class="dm-tab ${tab === 'msgs' ? 'dm-on' : ''}" id="__dm-t1">🗑️ Mensagens</button><button class="dm-tab ${tab === 'frd' ? 'dm-on' : ''}" id="__dm-t2">👥 Amigos</button><button class="dm-tab ${tab === 'qst' ? 'dm-on' : ''}" id="__dm-t3">🎯 Missões</button><button class="dm-tab ${tab === 'mut' ? 'dm-on' : ''}" id="__dm-t4">🔇 Silenciar</button><button class="dm-tab ${tab === 'lev' ? 'dm-on' : ''}" id="__dm-t5">🚪 Sair</button><button class="dm-tab ${tab === 'rd' ? 'dm-on' : ''}" id="__dm-t6">📖 Lido</button><button class="dm-tab ${tab === 'src' ? 'dm-on' : ''}" id="__dm-t7">🔍 Pesquisar</button><button class="dm-tab ${tab === 'usr' ? 'dm-on' : ''}" id="__dm-t8">👤 Usuário</button><button class="dm-tab ${tab === 'exp' ? 'dm-on' : ''}" id="__dm-t9">📥 Exportação</button><button class="dm-tab ${tab === 'srv' ? 'dm-on' : ''}" id="__dm-t10">🌍 Servidor</button></div><div id="__dm-panel-msgs" style="display:${tab === 'msgs' ? '' : 'none'}"></div><div id="__dm-panel-frd" style="display:${tab === 'frd' ? '' : 'none'}"></div><div id="__dm-panel-qst" style="display:${tab === 'qst' ? '' : 'none'}"></div><div id="__dm-panel-mut" style="display:${tab === 'mut' ? '' : 'none'}"></div><div id="__dm-panel-lev" style="display:${tab === 'lev' ? '' : 'none'}"></div><div id="__dm-panel-rd" style="display:${tab === 'rd' ? '' : 'none'}"></div><div id="__dm-panel-src" style="display:${tab === 'src' ? '' : 'none'}"></div><div id="__dm-panel-usr" style="display:${tab === 'usr' ? '' : 'none'}"></div><div id="__dm-panel-exp" style="display:${tab === 'exp' ? '' : 'none'}"></div><div id="__dm-panel-srv" style="display:${tab === 'srv' ? '' : 'none'}"></div></div><div class="dm-footer" id="__dm-footer-msgs" style="display:${tab === 'msgs' ? '' : 'none'}"></div><div class="dm-footer" id="__dm-footer-frd" style="display:${tab === 'frd' ? '' : 'none'}"></div><div class="dm-footer" id="__dm-footer-qst" style="display:${tab === 'qst' ? '' : 'none'}"></div><div class="dm-footer" id="__dm-footer-mut" style="display:${tab === 'mut' ? '' : 'none'}"></div><div class="dm-footer" id="__dm-footer-lev" style="display:${tab === 'lev' ? '' : 'none'}"></div><div class="dm-footer" id="__dm-footer-rd" style="display:${tab === 'rd' ? '' : 'none'}"></div><div class="dm-footer" id="__dm-footer-src" style="display:${tab === 'src' ? '' : 'none'}"></div><div class="dm-footer" id="__dm-footer-usr" style="display:${tab === 'usr' ? '' : 'none'}"></div><div class="dm-footer" id="__dm-footer-exp" style="display:${tab === 'exp' ? '' : 'none'}"></div>
+<div class="dm-footer" id="__dm-footer-srv" style="display:${tab === 'srv' ? '' : 'none'}"></div>`;
     on('__dm-x', destroy);
     on('__dm-t1', () => switchTab('msgs'));
     on('__dm-t2', () => switchTab('frd'));
@@ -886,6 +1176,7 @@
     on('__dm-t7', () => switchTab('src'));
     on('__dm-t8', () => switchTab('usr'));
     on('__dm-t9', () => switchTab('exp'));
+    on('__dm-t10', () => switchTab('srv'));
     renderMsgs();
     renderFriends();
     renderQuests();
@@ -895,6 +1186,7 @@
     renderSearch();
     renderUser();
     renderExport();
+    renderServerPanel();
   };
 
   const renderMsgs = () => {
@@ -914,13 +1206,22 @@
     let running = false,
       stoppedEarly = false,
       stEl = null;
-    const setSt = (h, c = '') => {
+    const ensureStEl = () => {
       if (!stEl) {
         stEl = document.createElement('div');
         $('__dm-panel-msgs')?.appendChild(stEl);
       }
-      stEl.className = `dm-st ${c}`;
-      stEl.innerHTML = h;
+      return stEl;
+    };
+    const setSt = (h, c = '') => {
+      const el = ensureStEl();
+      el.className = `dm-st ${c}`;
+      el.innerHTML = h;
+    };
+    const setStLive = (text, suffix = '', c = '') => {
+      const el = ensureStEl();
+      el.className = `dm-st ${c}`;
+      dmUpdateShimmer(el, text, suffix);
     };
     const setRunBtn = (r) => {
       const b = $('__dm-run');
@@ -1001,7 +1302,7 @@
           failed = new Set();
         while (running) {
           if (!$('__dm-run')) break;
-          setSt(`<span class="dm-spin"></span> Buscando [${label}] (${del} deletadas)...`);
+          setStLive(`Buscando [${label}] (${del} deletadas)...`);
           let res;
           try {
             res = await doSearch(gid, cid, myId, mode, term);
@@ -1020,7 +1321,7 @@
           for (const msg of msgs) {
             if (!running) break;
             const pv = (msg.content || '[anexo]').slice(0, 50);
-            setSt(`<span class="dm-spin"></span> [${del + 1}] ${pv}`);
+            setStLive(`[${del + 1}] ${pv}`);
             setNavProgress(`🗑️ ${pv}`);
             const resp = await fetch(
               `https://discord.com/api/v10/channels/${msg.channel_id || cid}/messages/${msg.id}`,
@@ -1036,7 +1337,7 @@
             } else if (resp.status === 429) {
               const retry = await resp.json().catch(() => ({}));
               const waitMs = (retry.retry_after ?? parseFloat(resp.headers.get('retry-after')) ?? 1) * 1000;
-              setSt(`<span class="dm-spin"></span> ⏳ Rate limited... aguardando ${(waitMs / 1000).toFixed(1)}s`);
+              setStLive(`⏳ Rate limited... aguardando ${(waitMs / 1000).toFixed(1)}s`);
               await sleep(waitMs);
             } else {
               failed.add(msg.id);
@@ -1067,7 +1368,7 @@
     const panel = $('__dm-panel-frd'),
       footer = $('__dm-footer-frd');
     if (!panel || !footer) return;
-    panel.innerHTML = `<div class="dm-empty"><span class="dm-spin"></span> Carregando...</div>`;
+    panel.innerHTML = `<div class="dm-empty">${dmShimmer('Carregando...')}</div>`;
     footer.innerHTML = `<span class="dm-counter" id="__dm-cnt">0 selecionado(s)</span><button class="dm-btn dm-ghost" id="__dm-selall" disabled>Selecionar todos</button><button class="dm-btn dm-ghost" id="__dm-cancel">Cancelar</button><button class="dm-btn dm-danger" id="__dm-rm" disabled>Remover</button>`;
     on('__dm-cancel', destroy);
     let friends = [],
@@ -1137,7 +1438,7 @@
       for (const uid of sel) {
         const f = friends.find((x) => x.user.id === uid);
         const name = f ? f.user.global_name || f.user.username : uid;
-        st.innerHTML = `<span class="dm-spin"></span> Removendo ${name}... (${done + 1}/${sel.size})`;
+        dmUpdateShimmer(st, `Removendo ${name}... (${done + 1}/${sel.size})`);
         setNavProgress(`👥 ${name} (${done + 1}/${sel.size})`);
         try {
           const r = await fetch(`https://discord.com/api/v10/users/@me/relationships/${uid}`, {
@@ -1164,7 +1465,7 @@
     const panel = $('__dm-panel-qst'),
       footer = $('__dm-footer-qst');
     if (!panel || !footer) return;
-    panel.innerHTML = `<div class="dm-empty"><span class="dm-spin"></span> Carregando missões...</div>`;
+    panel.innerHTML = `<div class="dm-empty">${dmShimmer('Carregando missões...')}</div>`;
     footer.innerHTML = `<span class="dm-counter" id="__dm-qcnt">0 selecionada(s)</span><button class="dm-btn dm-ghost" id="__dm-qselall" disabled>Selecionar todos</button><button class="dm-btn dm-brand" id="__dm-qrun" disabled>⚡ Resolver</button>`;
     let allQuests = [],
       sel = new Set();
@@ -1349,7 +1650,7 @@
     const panel = $('__dm-panel-mut'),
       footer = $('__dm-footer-mut');
     if (!panel || !footer) return;
-    panel.innerHTML = `<div class="dm-empty"><span class="dm-spin"></span> Carregando...</div>`;
+    panel.innerHTML = `<div class="dm-empty">${dmShimmer('Carregando...')}</div>`;
     footer.innerHTML = `<span class="dm-counter" id="__dm-mcnt">0 selecionado(s)</span><button class="dm-btn dm-ghost" id="__dm-mselall" disabled>Selecionar todos</button><button class="dm-btn dm-brand" id="__dm-mrun" disabled>🔇 Silenciar</button>`;
     let guilds = [],
       channels = [],
@@ -1453,7 +1754,7 @@
       panel.appendChild(st);
       const muteConfig = { selected_time_window: -1, end_time: null };
       if (currentType === 'guilds') {
-        st.innerHTML = `<span class="dm-spin"></span> Silenciando ${sel.size} servidor(es)...`;
+        dmUpdateShimmer(st, `Silenciando ${sel.size} servidor(es)...`);
         try {
           const guildOverrides = {};
           for (const gid of sel) {
@@ -1469,7 +1770,7 @@
           fail = sel.size;
         }
       } else {
-        st.innerHTML = `<span class="dm-spin"></span> Silenciando ${sel.size} canal(is)...`;
+        dmUpdateShimmer(st, `Silenciando ${sel.size} canal(is)...`);
         try {
           const channelOverrides = {};
           for (const cid of sel) {
@@ -1497,7 +1798,7 @@
     const panel = $('__dm-panel-lev'),
       footer = $('__dm-footer-lev');
     if (!panel || !footer) return;
-    panel.innerHTML = `<div class="dm-empty"><span class="dm-spin"></span> Carregando...</div>`;
+    panel.innerHTML = `<div class="dm-empty">${dmShimmer('Carregando...')}</div>`;
     footer.innerHTML = `<span class="dm-counter" id="__dm-lcnt">0 selecionado(s)</span><button class="dm-btn dm-ghost" id="__dm-lselall" disabled>Selecionar todos</button><button class="dm-btn dm-danger" id="__dm-lrun" disabled>🚪 Sair</button>`;
     let guilds = [],
       channels = [],
@@ -1605,7 +1906,7 @@
       panel.appendChild(st);
       for (const id of sel) {
         const action = currentType === 'guilds' ? 'Saindo do servidor' : 'Fechando conversa';
-        st.innerHTML = `<span class="dm-spin"></span> ${action}... (${done + 1}/${sel.size})`;
+        dmUpdateShimmer(st, `${action}... (${done + 1}/${sel.size})`);
         try {
           const url =
             currentType === 'guilds'
@@ -1633,7 +1934,7 @@
     const panel = $('__dm-panel-rd'),
       footer = $('__dm-footer-rd');
     if (!panel || !footer) return;
-    panel.innerHTML = `<div class="dm-empty"><span class="dm-spin"></span> Carregando...</div>`;
+    panel.innerHTML = `<div class="dm-empty">${dmShimmer('Carregando...')}</div>`;
     footer.innerHTML = `<span class="dm-counter" id="__dm-rcnt">0 selecionado(s)</span><button class="dm-btn dm-ghost" id="__dm-rselall" disabled>Selecionar todos</button><button class="dm-btn dm-brand" id="__dm-rrun" disabled>📖 Marcar como lido</button>`;
     let guilds = [],
       channels = [],
@@ -1741,13 +2042,13 @@
         for (let i = 0; i < guildArr.length; i++) {
           const gid = guildArr[i];
           const gName = guilds.find((g) => g.id === gid)?.name || gid;
-          st.innerHTML = `<span class="dm-spin"></span> Buscando canais de ${gName} (${i + 1}/${guildArr.length})...`;
+          dmUpdateShimmer(st, `Buscando canais de ${gName} (${i + 1}/${guildArr.length})...`);
           try {
             const r = await fetch(`https://discord.com/api/v9/guilds/${gid}/channels`, { headers: GET_HEADERS });
             if (r.status === 429) {
               const retry = await r.json().catch(() => ({}));
               const waitSec = retry.retry_after || 5;
-              st.innerHTML = `<span class="dm-spin"></span> ⏳ Rate limit! Aguardando ${Math.ceil(waitSec)}s...`;
+              dmUpdateShimmer(st, `⏳ Rate limit! Aguardando ${Math.ceil(waitSec)}s...`);
               await sleep(waitSec * 1000);
               i--;
               continue;
@@ -1773,7 +2074,7 @@
         for (let i = 0; i < chArr.length; i++) {
           const cid = chArr[i];
           const ch = channels.find((c) => c.id === cid);
-          st.innerHTML = `<span class="dm-spin"></span> Processando (${i + 1}/${chArr.length})...`;
+          dmUpdateShimmer(st, `Processando (${i + 1}/${chArr.length})...`);
           if (ch && ch.last_message_id) {
             readStates.push({ channel_id: cid, message_id: ch.last_message_id, read_state_type: 0 });
           } else if (ch) {
@@ -1784,7 +2085,7 @@
               if (r.status === 429) {
                 const retry = await r.json().catch(() => ({}));
                 const waitSec = retry.retry_after || 5;
-                st.innerHTML = `<span class="dm-spin"></span> ⏳ Rate limit! Aguardando ${Math.ceil(waitSec)}s...`;
+                dmUpdateShimmer(st, `⏳ Rate limit! Aguardando ${Math.ceil(waitSec)}s...`);
                 await sleep(waitSec * 1000);
                 i--;
                 continue;
@@ -1809,7 +2110,7 @@
         ackFail = 0;
       for (let i = 0; i < chunks.length; i++) {
         const chunk = chunks[i];
-        st.innerHTML = `<span class="dm-spin"></span> Marcando como lido (${Math.min((i + 1) * chunkSize, readStates.length)}/${readStates.length} canais)...`;
+        dmUpdateShimmer(st, `Marcando como lido (${Math.min((i + 1) * chunkSize, readStates.length)}/${readStates.length} canais)...`);
         try {
           const r = await fetch('https://discord.com/api/v9/read-states/ack-bulk', {
             method: 'POST',
@@ -1819,7 +2120,7 @@
           if (r.status === 429) {
             const retry = await r.json().catch(() => ({}));
             const waitSec = retry.retry_after || 5;
-            st.innerHTML = `<span class="dm-spin"></span> ⏳ Rate limit no ack! Aguardando ${Math.ceil(waitSec)}s...`;
+            dmUpdateShimmer(st, `⏳ Rate limit no ack! Aguardando ${Math.ceil(waitSec)}s...`);
             await sleep(waitSec * 1000);
             i--;
             continue;
@@ -1888,10 +2189,18 @@
 
     const updateStatus = (text) => {
       const st = $('__dm-sstatus');
-      if (st) {
-        st.style.display = text ? '' : 'none';
-        st.innerHTML = text;
+      if (!st) return;
+      if (!text) {
+        st.style.display = 'none';
+        st.innerHTML = '';
+        return;
       }
+      st.style.display = '';
+      if (typeof text === 'string' && text.includes('<span class="dm-shimmer"')) {
+        st.innerHTML = text;
+        return;
+      }
+      dmUpdateShimmer(st, String(text).replace(/<[^>]+>/g, ''));
     };
 
     const renderPage = () => {
@@ -1994,7 +2303,7 @@
             : target.name || target.recipients?.map((r) => r.global_name || r.username).join(', ') || 'DM';
 
         updateStatus(
-          `<span class="dm-spin"></span> Buscando em: ${escapeHtml(targetName)} (${searchState.pageMessages.length}/${TARGET_PER_PAGE} coletados)...`,
+          `Buscando em: ${targetName} (${searchState.pageMessages.length}/${TARGET_PER_PAGE} coletados)...`,
         );
 
         let url =
@@ -2011,7 +2320,7 @@
           if (r.status === 429) {
             const retry = await r.json().catch(() => ({}));
             const waitSec = retry.retry_after || 5;
-            updateStatus(`<span class="dm-spin"></span> ⏳ Rate limit! Aguardando ${Math.ceil(waitSec)}s...`);
+            updateStatus(`⏳ Rate limit! Aguardando ${Math.ceil(waitSec)}s...`);
             await sleep(waitSec * 1000);
             continue;
           }
@@ -2019,9 +2328,7 @@
           if (r.status === 202) {
             const retry = await r.json().catch(() => ({}));
             const waitSec = retry.retry_after || 1;
-            updateStatus(
-              `<span class="dm-spin"></span> ⏳ Indexando ${escapeHtml(targetName)}... Aguardando ${waitSec + 1}s...`,
-            );
+            updateStatus(`⏳ Indexando ${targetName}... Aguardando ${waitSec + 1}s...`);
             await sleep((waitSec + 1) * 1000);
             continue;
           }
@@ -2304,7 +2611,7 @@
         return;
       }
 
-      $('__dm-uresult').innerHTML = `<div class="dm-empty"><span class="dm-spin"></span> Buscando perfil...</div>`;
+      $('__dm-uresult').innerHTML = `<div class="dm-empty">${dmShimmer('Buscando perfil...')}</div>`;
       const runBtn = $('__dm-urun');
       if (runBtn) runBtn.disabled = true;
 
@@ -2338,12 +2645,1569 @@
     });
   };
 
+
+  // ── Shared profile / server helpers ─────────────────────────
+  const getCreationDate = (id) => {
+    try {
+      const timestamp = Number(BigInt(id) >> 22n) + 1420070400000;
+      return new Date(timestamp).toLocaleString('pt-BR', { dateStyle: 'long', timeStyle: 'short' });
+    } catch {
+      return 'Desconhecido';
+    }
+  };
+  const intToHex = (int) => (int != null && int !== 0 ? '#' + (int & 0xffffff).toString(16).padStart(6, '0') : null);
+  const defaultAvatarUrl = (user) => {
+    const u = user || {};
+    const idx =
+      u.discriminator && u.discriminator !== '0'
+        ? parseInt(u.discriminator, 10) % 5
+        : (parseInt(u.id || '0', 10) >> 22) % 6;
+    return `https://cdn.discordapp.com/embed/avatars/${idx}.png`;
+  };
+  const cdnMediaUrl = (path, hash, size) => {
+    if (!hash) return null;
+    const ext = hash.startsWith('a_') ? 'gif' : 'webp';
+    const q = size ? `?size=${size}` : '';
+    return `https://cdn.discordapp.com/${path}/${hash}.${ext}${q}`;
+  };
+  const globalAvatarUrl = (user, size = 128) => {
+    if (!user?.avatar) return defaultAvatarUrl(user);
+    return cdnMediaUrl(`avatars/${user.id}`, user.avatar, size);
+  };
+  const guildMemberAvatarUrl = (guildId, user, memberAvatar, size = 128) => {
+    if (memberAvatar) return cdnMediaUrl(`guilds/${guildId}/users/${user.id}/avatars`, memberAvatar, size);
+    return globalAvatarUrl(user, size);
+  };
+  const globalBannerUrl = (user, profileMeta, size = 600) => {
+    const hash = profileMeta?.banner || user?.banner;
+    if (!hash) return null;
+    return cdnMediaUrl(`banners/${user.id}`, hash, size);
+  };
+  const guildMemberBannerUrl = (guildId, user, hash, size = 600) => {
+    if (!hash) return null;
+    return cdnMediaUrl(`guilds/${guildId}/users/${user.id}/banners`, hash, size);
+  };
+  const memberDisplayName = (m) => {
+    const u = m.user || m;
+    return m.nick || u.global_name || u.username || 'Desconhecido';
+  };
+
+  const apiGetJson = async (url) => {
+    for (;;) {
+      const r = await fetch(url, { headers: GET_HEADERS });
+      if (r.status === 429) {
+        const retry = await r.json().catch(() => ({}));
+        await sleep((retry.retry_after || 5) * 1000);
+        continue;
+      }
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        throw new Error(err.message || `Erro ${r.status}`);
+      }
+      return r.json();
+    }
+  };
+
+  const apiGetJsonOptional = async (url) => {
+    try {
+      return await apiGetJson(url);
+    } catch {
+      return null;
+    }
+  };
+
+  const asArray = (v) => {
+    if (v == null) return [];
+    if (Array.isArray(v)) return v;
+    if (typeof v[Symbol.iterator] === 'function' && typeof v !== 'string') {
+      try {
+        return [...v];
+      } catch {
+        /* fallthrough */
+      }
+    }
+    if (typeof v === 'object') return Object.values(v);
+    return [];
+  };
+
+  const guildFromClient = (gid) => {
+    const g = GuildStore?.getGuild?.(gid);
+    if (!g || !g.id) return null;
+    const meta = {
+      id: String(g.id),
+      name: g.name ?? g.guildName,
+      icon: g.icon ?? g.iconURL,
+      description: g.description,
+      owner_id: g.ownerId ?? g.owner_id,
+      premium_tier: g.premiumTier ?? g.premium_tier ?? 0,
+      approximate_member_count: g.memberCount ?? g.member_count ?? g.approximateMemberCount,
+    };
+    if (!meta.name && !meta.icon && !meta.owner_id) return null;
+    return meta;
+  };
+
+  const mergeGuildMeta = async (gid, guildListEntry) => {
+    const fromApi = await apiGetJsonOptional(`https://discord.com/api/v9/guilds/${gid}?with_counts=true`);
+    const fromClient = guildFromClient(gid);
+    const fromList = guildListEntry;
+    const me = UserStore?.getCurrentUser?.();
+    let ownerId = fromApi?.owner_id ?? fromClient?.owner_id;
+    if (!ownerId && fromList?.owner && me?.id) ownerId = me.id;
+
+    return {
+      id: String(gid),
+      name: fromApi?.name ?? fromClient?.name ?? fromList?.name ?? 'Servidor',
+      icon: fromApi?.icon ?? fromClient?.icon ?? fromList?.icon ?? null,
+      description: fromApi?.description ?? fromClient?.description ?? fromList?.description ?? null,
+      owner_id: ownerId,
+      premium_tier: fromApi?.premium_tier ?? fromClient?.premium_tier ?? 0,
+      approximate_member_count:
+        fromApi?.approximate_member_count ?? fromClient?.approximate_member_count ?? null,
+    };
+  };
+
+  const rolesFromClient = (gid) => {
+    const raw = RoleStore?.getRoles?.(gid) ?? GuildStore?.getGuild?.(gid)?.roles;
+    const list = asArray(raw);
+    if (!list.length) return null;
+    return list
+      .filter((r) => r && r.id)
+      .map((r) => ({
+        id: r.id,
+        name: r.name,
+        color: r.color,
+        position: r.position,
+        hoist: r.hoist,
+      }));
+  };
+
+  const storeMemberToApi = (m) => {
+    if (!m) return null;
+    const uid = m.userId || m.user?.id;
+    const u =
+      m.user ||
+      (uid && /^\d{15,22}$/.test(String(uid)) ? UserStore?.getUser?.(uid) : null) ||
+      (uid ? { id: uid } : null);
+    if (!u?.id) return null;
+    const joined = m.joinedAt ?? m.joined_at;
+    return {
+      user: {
+        id: u.id || uid,
+        username: u.username,
+        global_name: u.globalName ?? u.global_name,
+        avatar: u.avatar,
+        discriminator: u.discriminator,
+      },
+      nick: m.nick ?? null,
+      roles: m.roles || [],
+      avatar: m.avatar ?? null,
+      banner: m.banner ?? null,
+      joined_at: joined instanceof Date ? joined.toISOString() : joined,
+      premium_since: m.premiumSince ?? m.premium_since,
+      communication_disabled_until: m.communicationDisabledUntil ?? m.communication_disabled_until,
+    };
+  };
+
+  const memberListScratch = new Map();
+  const memberPersistByGuild = new Map();
+  const memberListLayoutByGuild = new Map();
+
+  const memberListRangeKey = (range) => `${range[0]}-${range[1]}`;
+
+  const ensureMemberListLayout = (gid) => {
+    const key = String(gid);
+    if (!memberListLayoutByGuild.has(key)) {
+      memberListLayoutByGuild.set(key, {
+        ranges: new Map(),
+        invalidRanges: new Set(),
+        groups: [],
+        ordered: [],
+        maxRangeEnd: -1,
+      });
+    }
+    return memberListLayoutByGuild.get(key);
+  };
+
+  const persistGuildMember = (gid, api) => {
+    if (!api?.user?.id) return;
+    const key = String(gid);
+    if (!memberPersistByGuild.has(key)) memberPersistByGuild.set(key, new Map());
+    memberPersistByGuild.get(key).set(api.user.id, api);
+  };
+
+  const appendListEntries = (gid, entries) => {
+    const layout = ensureMemberListLayout(gid);
+    if (!layout.seenMembers) layout.seenMembers = new Set();
+    if (!layout.ordered) layout.ordered = [];
+    let lastGroupId = null;
+    for (const entry of entries) {
+      if (entry.type === 'group') {
+        lastGroupId = entry.id;
+        const idx = layout.ordered.findIndex((e) => e.type === 'group' && e.id === entry.id);
+        if (idx >= 0) layout.ordered[idx] = { ...layout.ordered[idx], count: entry.count };
+        else layout.ordered.push({ type: 'group', id: entry.id, count: entry.count });
+        continue;
+      }
+      const uid = entry.member?.user?.id;
+      if (!uid || layout.seenMembers.has(uid)) continue;
+      layout.seenMembers.add(uid);
+      if (lastGroupId) {
+        const gIdx = layout.ordered.findIndex((e) => e.type === 'group' && e.id === lastGroupId);
+        if (gIdx >= 0) {
+          const g = layout.ordered[gIdx];
+          layout.ordered[gIdx] = { ...g, count: (g.count || 0) + 1 };
+        }
+      }
+      layout.ordered.push(entry);
+    }
+  };
+
+  const applyLayoutGroupsMeta = (gid, groups) => {
+    const layout = ensureMemberListLayout(gid);
+    layout.groups = asArray(groups);
+    const byId = Object.fromEntries(layout.groups.map((g) => [String(g.id), g.count]));
+    for (const entry of layout.ordered || []) {
+      if (entry.type === 'group' && byId[entry.id] != null) entry.count = byId[entry.id];
+    }
+  };
+
+  const parseSyncListItems = (gid, items) => {
+    const key = String(gid);
+    const entries = [];
+    for (const item of asArray(items)) {
+      if (item?.group) {
+        entries.push({
+          type: 'group',
+          id: String(item.group.id),
+          count: item.group.count ?? 0,
+        });
+        continue;
+      }
+      const memberRaw = item?.member ?? item;
+      const user = item?.user ?? memberRaw?.user;
+      const api = storeMemberToApi({ ...memberRaw, user: user || memberRaw?.user });
+      if (!api?.user?.id) continue;
+      if (!memberListScratch.has(key)) memberListScratch.set(key, new Map());
+      memberListScratch.get(key).set(api.user.id, api);
+      persistGuildMember(gid, api);
+      entries.push({ type: 'member', member: api });
+    }
+    return entries;
+  };
+
+  const getStoreMembers = (gid) => {
+    if (!GuildMemberStore) return [];
+    let list = asArray(GuildMemberStore.getMembers?.(gid));
+    if (!list.length && typeof GuildMemberStore.getMemberIds === 'function') {
+      const ids = asArray(GuildMemberStore.getMemberIds(gid));
+      list = ids.map((id) => GuildMemberStore.getMember?.(gid, id)).filter(Boolean);
+    }
+    return list.map(storeMemberToApi).filter((m) => m?.user?.id);
+  };
+
+  const getMergedStoreMembers = (gid) => {
+    const key = String(gid);
+    const map = new Map();
+    for (const m of memberPersistByGuild.get(key)?.values() || []) map.set(m.user.id, m);
+    for (const m of memberListScratch.get(key)?.values() || []) map.set(m.user.id, m);
+    for (const m of getStoreMembers(gid)) map.set(m.user.id, m);
+    return [...map.values()];
+  };
+
+  const getMemberCountForGuild = (gid, { stableOnly = false } = {}) => {
+    const key = String(gid);
+    const fromPersist = memberPersistByGuild.get(key)?.size || 0;
+    const fromScratch = memberListScratch.get(key)?.size || 0;
+    const stable = Math.max(fromPersist, fromScratch);
+    if (stableOnly) return stable;
+    const fromStore = GuildMemberStore?.getMemberIds
+      ? asArray(GuildMemberStore.getMemberIds(gid)).filter(Boolean).length
+      : getStoreMembers(gid).length;
+    return Math.max(stable, fromStore);
+  };
+
+  const lazyExhaustedByGuild = new Map();
+  const INITIAL_LAZY_STEPS = 40;
+  const MORE_LAZY_STEPS = 8;
+
+  const clearGuildMemberCache = (gid) => {
+    const key = String(gid);
+    memberListScratch.delete(key);
+    memberPersistByGuild.delete(key);
+    memberListLayoutByGuild.delete(key);
+    lazyExhaustedByGuild.delete(key);
+  };
+
+  const getMemberListLayout = (gid) => memberListLayoutByGuild.get(String(gid));
+
+  const getNextVirtualRangeStart = (gid) => {
+    const layout = getMemberListLayout(gid);
+    if (layout && layout.maxRangeEnd != null && layout.maxRangeEnd >= 0) {
+      return layout.maxRangeEnd + 1;
+    }
+    const orderedLen = layout?.ordered?.length ?? 0;
+    if (orderedLen > 0) return orderedLen;
+    return 0;
+  };
+
+  /** Discord op 14: até 3 faixas; ancoragem [0,99] + janela deslizante abaixo do último índice. */
+  const buildOp14RangesBelow = (nextStart) => {
+    const start = Math.max(0, Math.floor(nextStart));
+    if (start <= 0) return [[0, 99]];
+    const anchor = [0, 99];
+    const target = [start, start + 99];
+    if (start <= 99) return [anchor, target];
+    const prev = [start - 100, start - 1];
+    return [anchor, prev, target];
+  };
+
+  const ingestMemberListUpdate = (payload) => {
+    const raw = payload?.guild_id != null || payload?.guildId != null ? payload : payload?.data ?? payload;
+    const gid = raw?.guild_id ?? raw?.guildId;
+    if (!gid) return 0;
+    const key = String(gid);
+    const layout = ensureMemberListLayout(gid);
+    let added = 0;
+    if (asArray(raw?.groups).length) applyLayoutGroupsMeta(gid, raw.groups);
+
+    const ops = asArray(raw?.ops ?? raw?.operations);
+    for (const opBlock of ops) {
+      const op = String(opBlock?.op ?? opBlock?.operation ?? '');
+      if (op === 'INVALIDATE') {
+        const range = opBlock?.range;
+        if (range?.length === 2) layout.invalidRanges.add(memberListRangeKey(range));
+        continue;
+      }
+      if (op === 'SYNC') {
+        const range = opBlock?.range;
+        const items = asArray(opBlock?.items);
+        const entries = parseSyncListItems(gid, items);
+        const newMembers = entries.filter((e) => e.type === 'member').length;
+        added += newMembers;
+        appendListEntries(gid, entries);
+        if (range?.length === 2) {
+          const rk = memberListRangeKey(range);
+          const prev = layout.ranges.get(rk) || [];
+          layout.ranges.set(rk, entries.length ? [...prev, ...entries] : prev.length ? prev : entries);
+          layout.maxRangeEnd = Math.max(layout.maxRangeEnd ?? -1, Number(range[1]));
+        }
+        continue;
+      }
+      if (op === 'UPDATE' || op === 'INSERT') {
+        const item = opBlock?.item;
+        const parsed = parseSyncListItems(gid, item ? [item] : []);
+        added += parsed.filter((e) => e.type === 'member').length;
+        continue;
+      }
+      if (!op || op === 'DELETE') continue;
+      const items = asArray(opBlock?.items ?? opBlock?.members);
+      for (const item of items) {
+        const parsed = parseSyncListItems(gid, [item]);
+        added += parsed.filter((e) => e.type === 'member').length;
+      }
+    }
+    return added;
+  };
+
+  const groupHeaderLabel = (groupId, rolesMap) => {
+    const id = String(groupId);
+    if (id === 'online') return { name: 'Online', color: null };
+    if (id === 'offline') return { name: 'Offline', color: null };
+    if (id === '__cache_more') return { name: 'Outros no cache', color: null };
+    const role = rolesMap?.[id];
+    if (role) return { name: role.name, color: role.color };
+    return { name: 'Membros', color: null };
+  };
+
+  const buildFallbackMemberSections = (members, { rolesMap, ownerId, roleId }) => {
+    let list = members.slice();
+    if (roleId) list = list.filter((m) => (m.roles || []).includes(roleId));
+    const hoisted = Object.values(rolesMap || {})
+      .filter((r) => r && r.hoist && r.name !== '@everyone')
+      .sort((a, b) => (b.position || 0) - (a.position || 0));
+    const sections = [];
+    const used = new Set();
+    const cmp = (a, b) =>
+      memberDisplayName(a).localeCompare(memberDisplayName(b), 'pt', { sensitivity: 'base' });
+    for (const role of hoisted) {
+      const bucket = list.filter((m) => (m.roles || []).includes(role.id));
+      if (!bucket.length) continue;
+      bucket.sort(cmp);
+      sections.push({ type: 'group', id: role.id, count: bucket.length });
+      for (const m of bucket) {
+        used.add(m.user.id);
+        sections.push({ type: 'member', member: m });
+      }
+    }
+    const rest = list.filter((m) => !used.has(m.user.id)).sort(cmp);
+    if (rest.length) {
+      sections.push({ type: 'group', id: 'everyone', count: rest.length });
+      for (const m of rest) sections.push({ type: 'member', member: m });
+    }
+    return sections;
+  };
+
+  const getMemberListSections = (gid, members, ctx) => {
+    if (ctx.roleId) return buildFallbackMemberSections(members, ctx);
+    const layout = memberListLayoutByGuild.get(String(gid));
+    if (layout?.ordered?.length) {
+      const ids = new Set(members.map((m) => m.user?.id).filter(Boolean));
+      const ordered = layout.ordered.filter(
+        (e) => e.type === 'group' || (e.member?.user?.id && ids.has(e.member.user.id)),
+      );
+      const inOrder = new Set(
+        ordered.filter((e) => e.type === 'member').map((e) => e.member.user.id),
+      );
+      const rest = members.filter((m) => m.user?.id && !inOrder.has(m.user.id));
+      if (rest.length) {
+        rest.sort((a, b) =>
+          memberDisplayName(a).localeCompare(memberDisplayName(b), 'pt', { sensitivity: 'base' }),
+        );
+        ordered.push({ type: 'group', id: '__cache_more', count: rest.length });
+        for (const m of rest) ordered.push({ type: 'member', member: m });
+      }
+      return ordered;
+    }
+    return buildFallbackMemberSections(members, ctx);
+  };
+
+  let SelectedChannelStore;
+  try {
+    for (const mod of Object.values(wpRequire?.c || {})) {
+      for (const exp of [mod?.exports, mod?.exports?.default, mod?.exports?.Z]) {
+        if (exp?.getChannelId && exp?.getLastSelectedChannelId) {
+          SelectedChannelStore = exp;
+          break;
+        }
+      }
+    }
+  } catch {}
+
+  const resolveMemberListChannelId = (guildId) => {
+    try {
+      const sel = SelectedChannelStore?.getChannelId?.() ?? SelectedChannelStore?.getLastSelectedChannelId?.();
+      if (sel) {
+        const ch = ChannelStore?.getChannel?.(sel) ?? GuildChannelStore?.getChannel?.(sel);
+        const gId = ch?.guild_id ?? ch?.guildId;
+        if (gId && String(gId) === String(guildId)) return String(sel);
+      }
+    } catch {}
+    try {
+      const ch = GuildChannelStore?.getSFWDefaultChannel?.(guildId);
+      if (ch?.id) return String(ch.id);
+    } catch {}
+    try {
+      const g = GuildStore?.getGuild?.(guildId);
+      const sid = g?.systemChannelId ?? g?.system_channel_id;
+      if (sid) return String(sid);
+    } catch {}
+    return null;
+  };
+
+  const requestLazyMemberList = (guildId, ranges = [[0, 99]]) => {
+    const gid = String(guildId);
+    const channelId = resolveMemberListChannelId(gid);
+    const rangeList = asArray(ranges).filter((r) => r?.length === 2);
+    if (!rangeList.length) rangeList.push([0, 99]);
+    const subFn = lazyMemberListSubscribe;
+    if (typeof subFn === 'function') {
+      const tries = channelId
+        ? [
+            () => subFn(gid, channelId, 0, rangeList),
+            () => subFn(gid, channelId, rangeList),
+            () => subFn(gid, channelId, 0),
+            () => subFn(gid, channelId),
+          ]
+        : [() => subFn(gid, rangeList), () => subFn(gid), () => subFn(gid, 0)];
+      for (const run of tries) {
+        try {
+          run();
+          return true;
+        } catch {}
+      }
+    }
+    if (typeof guildSubscriptionsUpdate === 'function') {
+      const payloads = channelId
+        ? [
+            { guildId: gid, subscriptions: { [channelId]: rangeList } },
+            { guild_id: gid, channels: { [channelId]: rangeList } },
+            { subscriptions: { [gid]: { [channelId]: rangeList } } },
+          ]
+        : [{ guildId: gid }, { guild_id: gid }];
+      for (const p of payloads) {
+        try {
+          guildSubscriptionsUpdate(p);
+          return true;
+        } catch {}
+      }
+    }
+    if (FluxDispatcher?.dispatch && channelId) {
+      try {
+        FluxDispatcher.dispatch({
+          type: 'GUILD_SUBSCRIPTIONS_CHANNEL',
+          guildId: gid,
+          channelId,
+          ranges: rangeList,
+        });
+        return true;
+      } catch {}
+    }
+    return false;
+  };
+
+  const hydrateLazyMemberRanges = async (guildId, opts = {}) => {
+    const {
+      maxSteps = INITIAL_LAZY_STEPS,
+      shouldStop = () => false,
+      onProgress = null,
+      idleWindowMs = 700,
+      stepWaitMs = 9000,
+    } = opts;
+    const initialCount = getMemberCountForGuild(guildId, { stableOnly: true });
+    let totalStats = {
+      chunksSeen: 0,
+      listUpdatesSeen: 0,
+      delta: 0,
+      timedOut: false,
+      count: initialCount,
+      stepsCompleted: 0,
+      nextVirtualStart: 0,
+      exhausted: false,
+    };
+    let stagnantSteps = 0;
+    for (let i = 0; i < maxSteps && !shouldStop(); i++) {
+      const layout = ensureMemberListLayout(guildId);
+      const maxEndBefore = layout.maxRangeEnd ?? -1;
+      const nextStart = getNextVirtualRangeStart(guildId);
+      const ranges = buildOp14RangesBelow(nextStart);
+      const targetRange = ranges[ranges.length - 1];
+      const targetKey = memberListRangeKey(targetRange);
+      const countBefore = getMemberCountForGuild(guildId, { stableOnly: true });
+
+      requestLazyMemberList(guildId, ranges);
+      const stats = await waitGatewayMembers(guildId, {
+        acceptChunksWithoutNonce: true,
+        maxWaitMs: stepWaitMs,
+        idleWindowMs: Math.max(idleWindowMs, 1200),
+        shouldStop,
+        onProgress: (p) =>
+          onProgress?.({
+            ...p,
+            rangeStep: i + 1,
+            maxSteps,
+            nextVirtualStart: nextStart,
+            rangeEnd: targetRange[1],
+            count: getMemberCountForGuild(guildId, { stableOnly: true }),
+          }),
+      });
+      totalStats.chunksSeen += stats.chunksSeen;
+      totalStats.listUpdatesSeen += stats.listUpdatesSeen;
+      totalStats.timedOut = totalStats.timedOut || stats.timedOut;
+      totalStats.stepsCompleted = i + 1;
+      totalStats.nextVirtualStart = getNextVirtualRangeStart(guildId);
+
+      const countAfter = getMemberCountForGuild(guildId, { stableOnly: true });
+      totalStats.count = countAfter;
+      totalStats.delta = countAfter - initialCount;
+
+      const maxEndAfter = layout.maxRangeEnd ?? -1;
+      const gotTargetSync = layout.ranges.has(targetKey);
+      if (layout.invalidRanges.has(targetKey)) {
+        totalStats.exhausted = true;
+        break;
+      }
+
+      const advanced =
+        maxEndAfter > maxEndBefore ||
+        countAfter > countBefore ||
+        (stats.listUpdatesSeen > 0 && gotTargetSync);
+      if (advanced) stagnantSteps = 0;
+      else stagnantSteps++;
+
+      if (stagnantSteps >= 4) {
+        totalStats.exhausted = true;
+        break;
+      }
+    }
+    return totalStats;
+  };
+
+  const createGatewayNonce = () => {
+    try {
+      if (typeof SnowflakeUtils?.fromTimestamp === 'function') {
+        return String(SnowflakeUtils.fromTimestamp(Date.now()));
+      }
+    } catch {}
+    return `${Date.now()}${Math.floor(Math.random() * 1e6)}`;
+  };
+
+  const getMemberCountFromStore = (gid) => {
+    if (GuildMemberStore?.getMemberIds) return asArray(GuildMemberStore.getMemberIds(gid)).filter(Boolean).length;
+    return getStoreMembers(gid).length;
+  };
+
+  const dispatchMembersRequest = (guildId, { query = '', limit = 100, userIds = null, nonce }) => {
+    if (userIds?.length) {
+      if (GuildActions?.requestMembersById) {
+        GuildActions.requestMembersById(guildId, userIds.slice(0, 100), false);
+        return true;
+      }
+      if (FluxDispatcher?.dispatch) {
+        FluxDispatcher.dispatch({
+          type: 'GUILD_MEMBERS_REQUEST',
+          guildId,
+          guildIds: [guildId],
+          userIds: userIds.slice(0, 100),
+          presences: false,
+          includePresences: false,
+          nonce,
+        });
+        return true;
+      }
+      return false;
+    }
+    if (GuildActions?.requestMembers) {
+      GuildActions.requestMembers(guildId, query, limit, false);
+      return true;
+    }
+    if (FluxDispatcher?.dispatch) {
+      FluxDispatcher.dispatch({
+        type: 'GUILD_MEMBERS_REQUEST',
+        guildId,
+        guildIds: [guildId],
+        query,
+        limit,
+        presences: false,
+        includePresences: false,
+        nonce,
+      });
+      return true;
+    }
+    return false;
+  };
+
+  const waitGatewayMembers = async (guildId, opts = {}) => {
+    const {
+      nonce = null,
+      acceptChunksWithoutNonce = false,
+      maxWaitMs = 12000,
+      idleWindowMs = 900,
+      pollIntervalMs = 200,
+      shouldStop = () => false,
+      onProgress = null,
+    } = opts;
+
+    const initial = getMemberCountForGuild(guildId);
+    let lastCount = initial;
+    let chunksSeen = 0;
+    let listUpdatesSeen = 0;
+    let lastActivityAt = Date.now();
+    let cancelled = false;
+    let timedOut = false;
+    const started = Date.now();
+
+    const chunkMatches = (chunk) => {
+      const gid = chunk?.guildId ?? chunk?.guild_id ?? chunk?.guildID;
+      if (gid && String(gid) !== String(guildId)) return false;
+      if (!nonce || acceptChunksWithoutNonce) return true;
+      const cn = chunk?.nonce;
+      if (cn == null) return acceptChunksWithoutNonce;
+      return String(cn) === String(nonce);
+    };
+
+    const noteChunk = () => {
+      chunksSeen++;
+      lastActivityAt = Date.now();
+      const count = getMemberCountForGuild(guildId);
+      if (count > lastCount) lastCount = count;
+      onProgress?.({ chunksSeen, listUpdatesSeen, count: lastCount, delta: lastCount - initial });
+    };
+
+    const onChunk = (event) => {
+      if (chunkMatches(event)) noteChunk();
+    };
+    const onBatch = (event) => {
+      for (const ch of asArray(event?.chunks)) {
+        if (chunkMatches(ch)) noteChunk();
+      }
+    };
+    const onListUpdate = (event) => {
+      const gid = event?.guildId ?? event?.guild_id ?? event?.data?.guild_id;
+      if (gid && String(gid) !== String(guildId)) return;
+      const ingested = ingestMemberListUpdate(event);
+      listUpdatesSeen++;
+      lastActivityAt = Date.now();
+      const count = getMemberCountForGuild(guildId);
+      if (count > lastCount) lastCount = count;
+      onProgress?.({
+        chunksSeen,
+        listUpdatesSeen,
+        count: lastCount,
+        delta: lastCount - initial,
+        ingested,
+      });
+    };
+
+    if (FluxDispatcher?.subscribe) {
+      FluxDispatcher.subscribe('GUILD_MEMBERS_CHUNK', onChunk);
+      FluxDispatcher.subscribe('GUILD_MEMBERS_CHUNK_BATCH', onBatch);
+      FluxDispatcher.subscribe('GUILD_MEMBER_LIST_UPDATE', onListUpdate);
+    }
+
+    const cancel = () => {
+      cancelled = true;
+    };
+    cancelMemberHydrator = cancel;
+
+    try {
+      while (!cancelled && !shouldStop()) {
+        await sleep(pollIntervalMs);
+        const t = Date.now();
+        const count = getMemberCountForGuild(guildId);
+        if (count > lastCount) {
+          lastCount = count;
+          lastActivityAt = t;
+          onProgress?.({ chunksSeen, listUpdatesSeen, count: lastCount, delta: lastCount - initial });
+        }
+        if ((chunksSeen > 0 || listUpdatesSeen > 0) && t - lastActivityAt >= idleWindowMs) break;
+        if (chunksSeen === 0 && listUpdatesSeen === 0 && t - started >= Math.min(maxWaitMs, 3500) && lastCount > initial)
+          break;
+        if (maxWaitMs > 0 && t - started >= maxWaitMs) {
+          timedOut = true;
+          break;
+        }
+      }
+    } finally {
+      if (FluxDispatcher?.unsubscribe) {
+        FluxDispatcher.unsubscribe('GUILD_MEMBERS_CHUNK', onChunk);
+        FluxDispatcher.unsubscribe('GUILD_MEMBERS_CHUNK_BATCH', onBatch);
+        FluxDispatcher.unsubscribe('GUILD_MEMBER_LIST_UPDATE', onListUpdate);
+      }
+      if (cancelMemberHydrator === cancel) cancelMemberHydrator = () => {};
+    }
+
+    return { chunksSeen, listUpdatesSeen, delta: lastCount - initial, count: lastCount, timedOut };
+  };
+
+  const gatewayFetchMembers = async (
+    guildId,
+    {
+      query = '',
+      roleId = '',
+      shouldStop = () => false,
+      onProgress = null,
+      loadMore = false,
+      resetCache = false,
+    } = {},
+  ) => {
+    const q = (query || '').trim();
+    if (!GuildMemberStore && !FluxDispatcher?.subscribe) {
+      throw new Error('Gateway indisponível. Recarregue o Discord (F5) e tente de novo.');
+    }
+
+    const gidKey = String(guildId);
+    if (resetCache || q) clearGuildMemberCache(guildId);
+
+    let source = 'gateway-cache';
+    let stats = {
+      chunksSeen: 0,
+      listUpdatesSeen: 0,
+      delta: 0,
+      timedOut: false,
+      count: getMemberCountForGuild(guildId),
+    };
+
+    if (q) {
+      source = 'gateway-search';
+      const nonce = createGatewayNonce();
+      if (!dispatchMembersRequest(guildId, { query: q, limit: 1000, nonce })) {
+        throw new Error('Falha ao enviar pedido Gateway (GUILD_MEMBERS_REQUEST).');
+      }
+      stats = await waitGatewayMembers(guildId, {
+        nonce,
+        acceptChunksWithoutNonce: true,
+        maxWaitMs: 18000,
+        shouldStop,
+        onProgress,
+      });
+    } else {
+      source = loadMore ? 'gateway-lazy-more' : 'gateway-lazy';
+      if (lazyExhaustedByGuild.get(gidKey) && loadMore) {
+        stats = {
+          chunksSeen: 0,
+          listUpdatesSeen: 0,
+          delta: 0,
+          timedOut: false,
+          count: getMemberCountForGuild(guildId, { stableOnly: true }),
+          stepsCompleted: 0,
+          exhausted: true,
+          nextVirtualStart: getNextVirtualRangeStart(guildId),
+        };
+      } else {
+        const maxSteps = loadMore ? MORE_LAZY_STEPS : INITIAL_LAZY_STEPS;
+        stats = await hydrateLazyMemberRanges(guildId, {
+          maxSteps,
+          shouldStop,
+          onProgress,
+          stepWaitMs: loadMore ? 12000 : 10000,
+        });
+        if (stats.exhausted) lazyExhaustedByGuild.set(gidKey, true);
+        else lazyExhaustedByGuild.delete(gidKey);
+      }
+      if (getMemberCountForGuild(guildId) < 1) {
+        source = 'gateway-warmup';
+        const nonce = createGatewayNonce();
+        if (dispatchMembersRequest(guildId, { query: '', limit: 100, nonce })) {
+          const warm = await waitGatewayMembers(guildId, {
+            nonce,
+            acceptChunksWithoutNonce: true,
+            maxWaitMs: 12000,
+            shouldStop,
+            onProgress,
+          });
+          stats = { ...stats, ...warm, chunksSeen: stats.chunksSeen + warm.chunksSeen };
+        }
+      }
+    }
+
+    let members = getMergedStoreMembers(guildId);
+    if (roleId) members = members.filter((m) => (m.roles || []).includes(roleId));
+
+    if (!members.length && q) {
+      try {
+        const rest = await apiGetJson(
+          `https://discord.com/api/v9/guilds/${guildId}/members/search?${new URLSearchParams({ query: q, limit: '1000' })}`,
+        );
+        members = asArray(rest);
+        source = 'rest-search-fallback';
+        if (roleId) members = members.filter((m) => (m.roles || []).includes(roleId));
+      } catch {}
+    }
+
+    return {
+      members,
+      source,
+      stats,
+      canLoadMore: !q && !lazyExhaustedByGuild.get(gidKey),
+      nextVirtualStart: getNextVirtualRangeStart(guildId),
+    };
+  };
+
+  const resolveUserInGuild = async (guildId, userId) => {
+    const cached = GuildMemberStore?.getMember?.(guildId, userId);
+    if (cached) {
+      const member = storeMemberToApi(cached);
+      if (member?.user?.id) return { member, user: member.user, guildAvatar: member.avatar };
+    }
+    const nonce = createGatewayNonce();
+    if (dispatchMembersRequest(guildId, { userIds: [userId], nonce })) {
+      await waitGatewayMembers(guildId, {
+        nonce,
+        acceptChunksWithoutNonce: true,
+        maxWaitMs: 8000,
+      });
+      const again = GuildMemberStore?.getMember?.(guildId, userId);
+      if (again) {
+        const member = storeMemberToApi(again);
+        if (member?.user?.id) return { member, user: member.user, guildAvatar: member.avatar };
+      }
+    }
+    const fromApiMember = await apiGetJsonOptional(
+      `https://discord.com/api/v9/guilds/${guildId}/members/${userId}`,
+    );
+    if (fromApiMember?.user?.id) {
+      return { member: fromApiMember, user: fromApiMember.user, guildAvatar: fromApiMember.avatar };
+    }
+    const fromUserStore =
+      userId && /^\d{15,22}$/.test(String(userId)) ? UserStore?.getUser?.(userId) : null;
+    if (fromUserStore?.id) {
+      const user = {
+        id: fromUserStore.id,
+        username: fromUserStore.username,
+        global_name: fromUserStore.globalName ?? fromUserStore.global_name,
+        avatar: fromUserStore.avatar,
+        discriminator: fromUserStore.discriminator,
+      };
+      return { member: { user, roles: [] }, user, guildAvatar: null };
+    }
+    const profile = await apiGetJsonOptional(
+      `https://discord.com/api/v9/users/${userId}/profile?type=popout&guild_id=${guildId}&with_mutual_guilds=false&with_mutual_friends=false&with_mutual_friends_count=false`,
+    );
+    if (profile?.user?.id) {
+      const gm = profile.guild_member;
+      const user = profile.user;
+      const member = gm
+        ? storeMemberToApi({ ...gm, user })
+        : { user, nick: null, roles: [], avatar: null };
+      return { member, user, guildAvatar: gm?.avatar ?? null };
+    }
+    const userOnly = await apiGetJsonOptional(`https://discord.com/api/v9/users/${userId}`);
+    if (userOnly?.id) return { member: { user: userOnly, roles: [] }, user: userOnly, guildAvatar: null };
+    return null;
+  };
+
+  const renderMemberPopupContent = (targetEl, data, memberRow, ctx) => {
+    const user = data.user || {};
+    const userProfile = data.user_profile || user;
+    const gm = data.guild_member || memberRow || {};
+    const gmp = data.guild_member_profile || {};
+    const guildId = ctx.guildId;
+    const ownerId = ctx.ownerId;
+    const rolesMap = ctx.rolesMap || {};
+    const isOwner = user.id === ownerId;
+
+    const gmAvatarHash = gm.avatar;
+    const avatarUrl = guildMemberAvatarUrl(guildId, user, gmAvatarHash, 256);
+    const decoAsset = user.avatar_decoration_data?.asset;
+    const decoUrl = decoAsset
+      ? `https://cdn.discordapp.com/avatar-decoration-presets/${decoAsset}.png?passthrough=true&size=240`
+      : '';
+
+    const serverBannerHash = gmp.banner || gm.banner;
+    const serverBannerUrl = guildMemberBannerUrl(guildId, user, serverBannerHash, 600);
+    const serverAccent = intToHex(gmp.accent_color) || '#5865f2';
+    const serverBio = gmp.bio ?? gm.bio ?? '';
+    const serverPronouns = gmp.pronouns ?? '';
+
+    const globalBannerUrlVal = globalBannerUrl(user, userProfile, 600);
+    const globalAccent = intToHex(userProfile.accent_color || user.accent_color) || '#5865f2';
+
+    const roleIds = gm.roles || memberRow?.roles || [];
+    const roleChips = roleIds
+      .map((rid) => rolesMap[rid])
+      .filter(Boolean)
+      .sort((a, b) => (b.position || 0) - (a.position || 0))
+      .map((role) => {
+        const col = role.color ? intToHex(role.color) : 'var(--text-muted)';
+        return `<span class="dm-role-chip" style="border-color:${col};color:${role.color ? col : 'var(--text-default)'}">${escapeHtml(role.name)}</span>`;
+      })
+      .join('');
+
+    const joinedAt = gm.joined_at || memberRow?.joined_at;
+    const boostSince = gm.premium_since || memberRow?.premium_since;
+    const timeoutUntil = gm.communication_disabled_until || memberRow?.communication_disabled_until;
+
+    const serverBannerHtml = serverBannerUrl
+      ? `<img class="dm-profile-banner-img" src="${serverBannerUrl}" alt="" />`
+      : `<div class="dm-profile-banner" style="background:${serverAccent}"></div>`;
+
+    const badges = [...(data.guild_badges || []), ...(data.badges || [])];
+    const badgeHtml =
+      badges.length > 0
+        ? `<div class="dm-profile-badges">${badges
+            .map(
+              (b) =>
+                `<div class="dm-profile-badge" data-tip="${escapeHtml(b.description || b.id || '')}"><img src="https://cdn.discordapp.com/badge-icons/${b.icon}.png" alt="" /></div>`,
+            )
+            .join('')}</div>`
+        : '';
+
+    const globalSection = `
+      <details class="dm-profile-section dm-global-fold">
+        <summary class="dm-profile-section-title" style="cursor:pointer;margin-bottom:0">Perfil global (conta)</summary>
+        <div style="margin-top:10px">
+          ${
+            globalBannerUrlVal
+              ? `<div class="dm-profile-banner" style="height:80px;background:url('${globalBannerUrlVal}') center/cover"></div>`
+              : `<div class="dm-profile-banner" style="height:60px;background:${globalAccent}"></div>`
+          }
+          <div class="dm-profile-infos" style="margin-top:8px">
+            <div class="dm-profile-info-item">📅 Conta criada: ${getCreationDate(user.id)}</div>
+            ${userProfile.bio || user.bio ? `<div class="dm-profile-bio" style="margin-top:6px">${escapeHtml(userProfile.bio || user.bio || '')}</div>` : ''}
+            ${userProfile.pronouns ? `<div class="dm-profile-pronouns">${escapeHtml(userProfile.pronouns)}</div>` : ''}
+          </div>
+          <div class="dm-profile-actions">
+            <button type="button" class="dm-btn dm-ghost" id="__dm-pop-dl-gavatar">📥 Avatar global</button>
+            ${globalBannerUrlVal ? `<button type="button" class="dm-btn dm-ghost" id="__dm-pop-dl-gbanner">📥 Banner global</button>` : ''}
+          </div>
+        </div>
+      </details>`;
+
+    targetEl.innerHTML = `
+      <div class="dm-profile-card">
+        <div class="dm-guild-profile-banner-wrap">${serverBannerHtml}</div>
+        <div class="dm-profile-header">
+          <div class="dm-profile-toprow">
+            <div class="dm-profile-avatar-wrapper">
+              <div class="dm-profile-avatar"><img src="${avatarUrl}" alt="" /></div>
+              ${decoUrl ? `<div class="dm-profile-deco"><img src="${decoUrl}" alt="" /></div>` : ''}
+            </div>
+            ${badgeHtml}
+          </div>
+          <div class="dm-profile-names">
+            <div class="dm-profile-gname">
+              ${escapeHtml(memberDisplayName(gm.user ? gm : { user, nick: gm.nick }))}
+              ${isOwner ? '<span class="dm-owner-badge">Dono(a)</span>' : ''}
+            </div>
+            <div class="dm-profile-uname">${escapeHtml(user.username)}${user.discriminator && user.discriminator !== '0' ? `#${user.discriminator}` : ''}</div>
+            ${serverPronouns ? `<div class="dm-profile-pronouns">${escapeHtml(serverPronouns)}</div>` : ''}
+          </div>
+          <div class="dm-profile-actions">
+            <button type="button" class="dm-btn dm-ghost" id="__dm-pop-dl-savatar">📥 Avatar (servidor)</button>
+            ${serverBannerUrl ? `<button type="button" class="dm-btn dm-ghost" id="__dm-pop-dl-sbanner">📥 Banner (servidor)</button>` : ''}
+            ${serverBio ? `<button type="button" class="dm-btn dm-ghost" id="__dm-pop-copy-sbio">📋 Bio (servidor)</button>` : ''}
+          </div>
+        </div>
+        ${
+          serverBio
+            ? `<div class="dm-profile-section"><div class="dm-profile-section-title">Bio neste servidor</div><div class="dm-profile-bio">${escapeHtml(serverBio)}</div></div>`
+            : `<div class="dm-profile-section"><div class="dm-profile-section-title">Bio neste servidor</div><div class="dm-profile-bio" style="color:var(--text-muted)">Sem bio neste servidor.</div></div>`
+        }
+        <div class="dm-profile-section">
+          <div class="dm-profile-section-title">Neste servidor — ${escapeHtml(ctx.guildName || '')}</div>
+          <div class="dm-profile-infos">
+            ${joinedAt ? `<div class="dm-profile-info-item">📥 Entrou em: ${new Date(joinedAt).toLocaleString('pt-BR')}</div>` : ''}
+            ${boostSince ? `<div class="dm-profile-info-item">💎 Boost desde: ${new Date(boostSince).toLocaleString('pt-BR')}</div>` : ''}
+            ${timeoutUntil && new Date(timeoutUntil) > new Date() ? `<div class="dm-profile-info-item">⏳ Timeout até: ${new Date(timeoutUntil).toLocaleString('pt-BR')}</div>` : ''}
+            ${data.mutual_friends_count > 0 ? `<div class="dm-profile-info-item">👥 Amigos em comum: ${data.mutual_friends_count}</div>` : ''}
+          </div>
+          ${roleChips ? `<div class="dm-role-chips">${roleChips}</div>` : '<div class="dm-profile-bio" style="color:var(--text-muted);margin-top:6px">Sem cargos visíveis.</div>'}
+        </div>
+        ${data.private ? `<div class="dm-st dm-err" style="margin:12px">⚠️ Parte do perfil global pode estar oculta (perfil privado).</div>` : ''}
+        ${globalSection}
+      </div>`;
+
+    $('__dm-pop-dl-savatar')?.addEventListener('click', () => window.open(avatarUrl, '_blank'));
+    $('__dm-pop-dl-sbanner')?.addEventListener('click', () => serverBannerUrl && window.open(serverBannerUrl, '_blank'));
+    $('__dm-pop-dl-gavatar')?.addEventListener('click', () => window.open(globalAvatarUrl(user, 256), '_blank'));
+    $('__dm-pop-dl-gbanner')?.addEventListener('click', () => globalBannerUrlVal && window.open(globalBannerUrlVal, '_blank'));
+    const copyBio = $('__dm-pop-copy-sbio');
+    if (copyBio)
+      copyBio.addEventListener('click', () => {
+        navigator.clipboard.writeText(serverBio).then(() => {
+          copyBio.textContent = '✅ Copiado!';
+          setTimeout(() => {
+            copyBio.textContent = '📋 Bio (servidor)';
+          }, 2000);
+        });
+      });
+  };
+
+  const openMemberPopup = async (guildId, userId, ctx, memberRow = null) => {
+    closeMemberPopup();
+    const pop = document.createElement('div');
+    pop.id = '__dm-profile-overlay';
+    pop.innerHTML = `<div class="dm-guild-popup-modal" role="dialog" aria-modal="true">
+      <div class="dm-hdr"><h2>Perfil no servidor</h2><button type="button" class="dm-close" id="__dm-pop-x" aria-label="Fechar">${IC_X}</button></div>
+      <div class="dm-body" id="__dm-pop-body"><div class="dm-st">${dmShimmer('Carregando perfil...')}</div></div>
+    </div>`;
+    document.body.appendChild(pop);
+    pop.addEventListener('click', (e) => {
+      if (e.target === pop) closeMemberPopup();
+    });
+    $('__dm-pop-x')?.addEventListener('click', closeMemberPopup);
+
+    closeMemberPopup = () => {
+      pop.remove();
+      closeMemberPopup = () => {};
+    };
+
+    const body = $('__dm-pop-body');
+    try {
+      let profileData = null;
+      let memberExtra = memberRow;
+      const profileUrl = `https://discord.com/api/v9/users/${userId}/profile?type=modal&guild_id=${guildId}&with_mutual_guilds=false&with_mutual_friends=false&with_mutual_friends_count=true`;
+      const [profRes, memRes] = await Promise.all([
+        fetch(profileUrl, { headers: GET_HEADERS }),
+        memberRow
+          ? Promise.resolve(null)
+          : fetch(`https://discord.com/api/v9/guilds/${guildId}/members/${userId}`, { headers: GET_HEADERS }),
+      ]);
+      if (profRes.status === 429) {
+        const retry = await profRes.json().catch(() => ({}));
+        await sleep((retry.retry_after || 5) * 1000);
+        throw new Error('Rate limit — tente novamente.');
+      }
+      if (!profRes.ok) {
+        const err = await profRes.json().catch(() => ({}));
+        throw new Error(err.message || `Erro ${profRes.status}`);
+      }
+      profileData = await profRes.json();
+      if (!memberExtra && memRes?.ok) memberExtra = await memRes.json();
+      renderMemberPopupContent(body, profileData, memberExtra, ctx);
+    } catch (e) {
+      body.innerHTML = `<div class="dm-st dm-err">❌ ${escapeHtml(e.message)}</div>`;
+    }
+  };
+
+  // ==========================================
+  // ABA SERVIDOR — Painel & membros
+  // ==========================================
+  const renderServerPanel = async () => {
+    const panel = $('__dm-panel-srv'),
+      footer = $('__dm-footer-srv');
+    if (!panel || !footer) return;
+
+    panel.innerHTML = `<div class="dm-st">${dmShimmer('Carregando servidores...')}</div>`;
+    footer.innerHTML = `<span class="dm-counter" id="__dm-srv-cnt">Selecione um servidor</span><button type="button" class="dm-btn dm-brand" id="__dm-srv-refresh" disabled>🔄 Atualizar</button>`;
+
+    let guilds = [];
+    try {
+      const data = await fetchSharedData();
+      guilds = data.guilds || [];
+    } catch (e) {
+      panel.innerHTML = `<div class="dm-st dm-err">❌ ${escapeHtml(e.message)}</div>`;
+      return;
+    }
+
+    if (!guilds.length) {
+      panel.innerHTML = `<div class="dm-empty">Nenhum servidor encontrado.</div>`;
+      return;
+    }
+
+    const guildOptions = guilds.map((g) => `<option value="${g.id}">${escapeHtml(g.name || g.id)}</option>`).join('');
+
+    panel.innerHTML = `
+      <label class="dm-label">Servidor</label>
+      <select class="dm-select" id="__dm-srv-guild">${guildOptions}</select>
+      <input class="dm-input" id="__dm-srv-gid" placeholder="Ou cole o ID do servidor (opcional)" />
+      <div class="dm-tabs dm-srv-seg" style="margin-bottom:12px">
+        <button type="button" class="dm-tab dm-on" id="__dm-srv-seg-overview">Visão geral</button>
+        <button type="button" class="dm-tab" id="__dm-srv-seg-members">Membros</button>
+        <button type="button" class="dm-tab" id="__dm-srv-seg-roles">Cargos</button>
+      </div>
+      <div id="__dm-srv-view-overview"></div>
+      <div id="__dm-srv-view-members" style="display:none"></div>
+      <div id="__dm-srv-view-roles" style="display:none"></div>
+      <div id="__dm-srv-status"></div>`;
+
+    const state = {
+      guildId: guilds[0]?.id,
+      guildMeta: null,
+      roles: [],
+      rolesMap: {},
+      roleCounts: {},
+      ownerId: null,
+      section: 'overview',
+      members: [],
+      memberLoading: false,
+      memberStop: false,
+      canLoadMore: false,
+      lazyExhausted: false,
+      loadMoreActive: false,
+      memberScrollObserver: null,
+      lastLoadMoreAt: 0,
+    };
+
+    const setStatus = (html, cls = '') => {
+      const st = $('__dm-srv-status');
+      if (!st) return;
+      st.className = cls ? `dm-st ${cls}` : 'dm-st';
+      if (html === '') {
+        st.innerHTML = '';
+        return;
+      }
+      st.innerHTML = html;
+    };
+    const setStatusLive = (text, suffix = '') => {
+      const st = $('__dm-srv-status');
+      if (!st) return;
+      st.className = 'dm-st';
+      dmUpdateShimmer(st, text, suffix);
+    };
+
+    const activeGuildId = () => {
+      const manual = $('__dm-srv-gid')?.value.trim();
+      if (manual && /^\d{17,20}$/.test(manual)) return manual;
+      return $('__dm-srv-guild')?.value || state.guildId;
+    };
+
+    const switchSection = (sec) => {
+      state.section = sec;
+      for (const [name, id, btnId] of [
+        ['overview', '__dm-srv-view-overview', '__dm-srv-seg-overview'],
+        ['members', '__dm-srv-view-members', '__dm-srv-seg-members'],
+        ['roles', '__dm-srv-view-roles', '__dm-srv-seg-roles'],
+      ]) {
+        const el = $(id);
+        if (el) el.style.display = sec === name ? '' : 'none';
+        const btn = $(btnId);
+        if (btn) btn.classList.toggle('dm-on', sec === name);
+      }
+      if (sec === 'members' && state.guildMeta && !state.memberLoading) {
+        runMemberLoad();
+      }
+    };
+
+    const loadGuildContext = async () => {
+      const gid = activeGuildId();
+      if (!gid) return;
+      state.guildId = gid;
+      setStatusLive('Carregando dados do servidor...');
+      try {
+        const listEntry = guilds.find((g) => String(g.id) === String(gid));
+        const guild = await mergeGuildMeta(gid, listEntry);
+        if (!listEntry && !guild.owner_id && guild.name === 'Servidor' && !guild.icon) {
+          throw new Error('Abra este servidor no Discord ou escolha-o na lista.');
+        }
+
+        let roles = await apiGetJsonOptional(`https://discord.com/api/v9/guilds/${gid}/roles`);
+        if (!asArray(roles).length) roles = rolesFromClient(gid);
+        roles = asArray(roles).sort((a, b) => (b.position || 0) - (a.position || 0));
+
+        const counts = (await apiGetJsonOptional(`https://discord.com/api/v9/guilds/${gid}/roles/member-counts`)) || {};
+        const localCounts = {};
+        for (const m of getStoreMembers(gid)) {
+          for (const rid of m.roles || []) localCounts[rid] = (localCounts[rid] || 0) + 1;
+        }
+
+        state.guildMeta = guild;
+        state.ownerId = guild.owner_id;
+        state.roles = roles;
+        state.rolesMap = Object.fromEntries(state.roles.map((r) => [r.id, r]));
+        state.roleCounts = Object.keys(counts).length ? counts : localCounts;
+        state.roleCountsFromCache = !Object.keys(counts).length && Object.keys(localCounts).length > 0;
+        $('__dm-srv-refresh').disabled = false;
+        $('__dm-srv-cnt').textContent = guild.name || gid;
+        setStatus('');
+        renderOverview();
+        renderRolesList();
+        renderMembersShell();
+        if (state.section === 'members') await runMemberLoad();
+      } catch (e) {
+        setStatus(`❌ ${escapeHtml(e.message)}`, 'dm-err');
+      }
+    };
+
+    const guildIconUrl = (g) => {
+      if (!g?.icon) return null;
+      const ext = g.icon.startsWith('a_') ? 'gif' : 'webp';
+      return `https://cdn.discordapp.com/icons/${g.id}/${g.icon}.${ext}?size=128`;
+    };
+
+    const renderOverview = async () => {
+      const view = $('__dm-srv-view-overview');
+      if (!view || !state.guildMeta) return;
+      const g = state.guildMeta;
+      const icon = guildIconUrl(g);
+      let ownerLine = dmShimmer('Carregando dono...');
+      view.innerHTML = `
+        <div class="dm-srv-overview-card">
+          <div class="dm-srv-overview-top">
+            <div class="dm-av dm-sq" style="width:48px;height:48px">${icon ? `<img src="${icon}" alt="" />` : escapeHtml((g.name || '?')[0])}</div>
+            <div>
+              <div class="dm-fn" style="font-size:16px">${escapeHtml(g.name || 'Servidor')}</div>
+              <div class="dm-hint" style="margin:0">👥 ~${g.approximate_member_count ?? '?'} membros · 💎 Tier ${g.premium_tier ?? 0}</div>
+            </div>
+          </div>
+          <div class="dm-profile-section" style="margin-top:12px">
+            <div class="dm-profile-section-title">Dono</div>
+            <div id="__dm-srv-owner-row">${ownerLine}</div>
+          </div>
+          ${g.description ? `<div class="dm-profile-section"><div class="dm-profile-section-title">Descrição</div><div class="dm-profile-bio">${escapeHtml(g.description)}</div></div>` : ''}
+        </div>`;
+
+      if (!state.ownerId) {
+        $('__dm-srv-owner-row').innerHTML = `<span class="dm-hint">owner_id indisponível</span>`;
+        return;
+      }
+      const ownerResolved = await resolveUserInGuild(g.id, state.ownerId);
+      if (ownerResolved?.user?.id) {
+        const { member: ownerMember, user, guildAvatar } = ownerResolved;
+        const av = guildMemberAvatarUrl(g.id, user, guildAvatar, 32);
+        const ctx = {
+          guildId: g.id,
+          ownerId: state.ownerId,
+          rolesMap: state.rolesMap,
+          guildName: g.name,
+        };
+        const label = memberDisplayName(ownerMember);
+        $('__dm-srv-owner-row').innerHTML = `<div class="dm-fi dm-srv-owner" data-uid="${user.id}" style="padding:8px 0">
+          <div class="dm-av"><img src="${av}" alt="" /></div>
+          <div class="dm-fn">${escapeHtml(label)} <span class="dm-owner-badge">Dono(a)</span></div>
+        </div>`;
+        $('__dm-srv-owner-row')
+          .querySelector('.dm-srv-owner')
+          ?.addEventListener('click', () => openMemberPopup(g.id, user.id, ctx, ownerMember));
+      } else {
+        $('__dm-srv-owner-row').innerHTML = `<div class="dm-hint">ID do dono: ${escapeHtml(state.ownerId)}</div>`;
+      }
+    };
+
+    const renderRolesList = () => {
+      const view = $('__dm-srv-view-roles');
+      if (!view) return;
+      const list = asArray(state.roles).filter((r) => r && r.name !== '@everyone');
+      if (!list.length) {
+        view.innerHTML = `<div class="dm-empty">Nenhum cargo.</div>`;
+        return;
+      }
+      view.innerHTML = `
+        <div class="dm-section">${list.length} cargo(s)</div>
+        <div class="dm-list" style="max-height:340px">${list
+          .map((r) => {
+            const cnt = state.roleCounts[r.id] ?? (state.roleCountsFromCache ? '~?' : '—');
+            const col = r.color ? intToHex(r.color) : 'var(--text-muted)';
+            return `<div class="dm-fi dm-srv-rolepick" data-rid="${r.id}">
+              <span class="dm-role-dot" style="background:${col}"></span>
+              <div class="dm-fn">${escapeHtml(r.name)}</div>
+              <small style="color:var(--text-muted);flex-shrink:0">${cnt} membro(s)</small>
+            </div>`;
+          })
+          .join('')}</div>
+        <p class="dm-hint">Clique em um cargo para filtrar na aba Membros.</p>`;
+      view.querySelectorAll('.dm-srv-rolepick').forEach((el) => {
+        el.addEventListener('click', () => {
+          const rid = el.dataset.rid;
+          switchSection('members');
+          const sel = $('__dm-srv-role');
+          if (sel) sel.value = rid;
+          runMemberLoad();
+        });
+      });
+    };
+
+    const renderMembersShell = () => {
+      const view = $('__dm-srv-view-members');
+      if (!view) return;
+      const roleOpts =
+        `<option value="">Todos os cargos</option>` +
+        asArray(state.roles)
+          .filter((r) => r && r.name !== '@everyone')
+          .map((r) => `<option value="${r.id}">${escapeHtml(r.name)}</option>`)
+          .join('');
+      view.innerHTML = `
+        <label class="dm-label">Buscar membros</label>
+        <div class="dm-search">${IC_SEARCH}<input type="text" id="__dm-srv-mq" placeholder="Filtrar por nome ou apelido (opcional)" /></div>
+        <label class="dm-label">Filtrar por cargo</label>
+        <select class="dm-select" id="__dm-srv-role">${roleOpts}</select>
+        <p class="dm-hint">Atualizar puxa as primeiras ${INITIAL_LAZY_STEPS} faixas (op 14). Role até o fim — carrega mais sozinho. Alt+Atualizar limpa o cache.</p>
+        <div class="dm-section" id="__dm-srv-msec">Carregando...</div>
+        <div class="dm-srv-mlist-wrap"><div class="dm-list" id="__dm-srv-mlist"></div></div>`;
+      $('__dm-srv-mq')?.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') runMemberLoad();
+      });
+      $('__dm-srv-role')?.addEventListener('change', () => runMemberLoad());
+    };
+
+    const renderMemberList = (members) => {
+      const listEl = $('__dm-srv-mlist');
+      const sec = $('__dm-srv-msec');
+      if (!listEl) return;
+      state.members = members;
+      const memberCount = members.length;
+      sec.textContent = `${memberCount} membro(s)`;
+      if (!memberCount) {
+        listEl.innerHTML = `<div class="dm-empty" style="padding:24px">Nenhum membro encontrado.</div>`;
+        state.canLoadMore = false;
+        return;
+      }
+      const gid = state.guildId;
+      const roleId = $('__dm-srv-role')?.value || '';
+      const ctx = {
+        guildId: gid,
+        ownerId: state.ownerId,
+        rolesMap: state.rolesMap,
+        guildName: state.guildMeta?.name,
+        roleId,
+      };
+      const sections = getMemberListSections(gid, members, ctx);
+      const layout = memberListLayoutByGuild.get(String(gid));
+      const groupCounts = Object.fromEntries(
+        (layout?.groups || []).map((g) => [String(g.id), g.count]),
+      );
+      const memberById = new Map(members.map((m) => [m.user?.id, m]));
+      listEl.innerHTML = sections
+        .map((entry) => {
+          if (entry.type === 'group') {
+            const hdr = groupHeaderLabel(entry.id, state.rolesMap);
+            const col = hdr.color ? intToHex(hdr.color) : 'var(--text-muted)';
+            const n = groupCounts[entry.id] ?? entry.count;
+            const cnt = n != null && Number(n) > 0 ? `<small> — ${Number(n).toLocaleString('pt-BR')}</small>` : '';
+            return `<div class="dm-srv-group-hdr"><span class="dm-role-dot" style="background:${col}"></span>${escapeHtml(hdr.name)}${cnt}</div>`;
+          }
+          const m = entry.member;
+          if (!m?.user?.id) return '';
+          const uid = m.user.id;
+          const av = guildMemberAvatarUrl(gid, m.user, m.avatar, 32);
+          const topRole = (m.roles || [])
+            .map((rid) => state.rolesMap[rid])
+            .filter(Boolean)
+            .sort((a, b) => (b.position || 0) - (a.position || 0))[0];
+          const sub = topRole && !topRole.hoist ? topRole.name : uid === state.ownerId ? 'Dono(a)' : '';
+          return `<div class="dm-fi dm-srv-member" data-uid="${uid}">
+            <div class="dm-av"><img src="${av}" alt="" /></div>
+            <div class="dm-fn">${escapeHtml(memberDisplayName(m))}${uid === state.ownerId ? ' <span class="dm-owner-badge">Dono</span>' : ''}${sub ? `<small>${escapeHtml(sub)}</small>` : ''}</div>
+          </div>`;
+        })
+        .join('');
+      const showMore =
+        state.canLoadMore &&
+        !roleId &&
+        !($('__dm-srv-mq')?.value || '').trim() &&
+        !state.lazyExhausted;
+      if (showMore) {
+        const shimmerCls = state.loadMoreActive ? 'dm-shimmer' : 'dm-shimmer dm-idle';
+        listEl.insertAdjacentHTML(
+          'beforeend',
+          `<div class="dm-srv-loadmore" id="__dm-srv-loadmore"><span class="${shimmerCls}" id="__dm-srv-shimmer">Carregando mais..</span><div class="dm-srv-load-sentinel" id="__dm-srv-load-sentinel" aria-hidden="true"></div></div>`,
+        );
+        bindMemberInfiniteScroll(listEl);
+      } else if (state.lazyExhausted && !roleId && !($('__dm-srv-mq')?.value || '').trim()) {
+        listEl.insertAdjacentHTML(
+          'beforeend',
+          `<div class="dm-srv-loadmore"><span class="dm-hint" style="margin:0">Fim das faixas disponíveis no Gateway (servidor enorme).</span></div>`,
+        );
+      }
+      listEl.querySelectorAll('.dm-srv-member').forEach((el) => {
+        el.addEventListener('click', () => {
+          const uid = el.dataset.uid;
+          const row = memberById.get(uid) || members.find((x) => x.user?.id === uid);
+          openMemberPopup(gid, uid, ctx, row);
+        });
+      });
+    };
+
+    const setLoadMoreShimmer = (active) => {
+      state.loadMoreActive = !!active;
+      const el = $('__dm-srv-shimmer');
+      if (!el) return;
+      el.classList.toggle('dm-idle', !active);
+      el.classList.add('dm-shimmer');
+    };
+
+    const bindMemberInfiniteScroll = (listEl) => {
+      state.memberScrollObserver?.disconnect();
+      const sentinel = listEl?.querySelector('#__dm-srv-load-sentinel');
+      if (!sentinel || !listEl) return;
+      state.memberScrollObserver = new IntersectionObserver(
+        (entries) => {
+          if (!entries[0]?.isIntersecting) return;
+          if (state.memberLoading || !state.canLoadMore || state.lazyExhausted) return;
+          if (($('__dm-srv-mq')?.value || '').trim() || $('__dm-srv-role')?.value) return;
+          if (Date.now() - (state.lastLoadMoreAt || 0) < 1500) return;
+          runMemberLoadMore();
+        },
+        { root: listEl, rootMargin: '48px', threshold: 0 },
+      );
+      state.memberScrollObserver.observe(sentinel);
+    };
+
+    const runMemberFetch = async (opts = {}) => {
+      if (state.memberLoading) {
+        if (!opts.loadMore) {
+          state.memberStop = true;
+          cancelMemberHydrator();
+        }
+        return;
+      }
+      const gid = state.guildId;
+      const cachedBefore = getMemberCountForGuild(gid, { stableOnly: true });
+      const q = ($('__dm-srv-mq')?.value || '').trim();
+      const roleId = $('__dm-srv-role')?.value || '';
+      const refreshBtn = $('__dm-srv-refresh');
+      state.memberLoading = true;
+      state.memberStop = false;
+      if (opts.loadMore) setLoadMoreShimmer(true);
+      if (refreshBtn && !opts.loadMore) {
+        refreshBtn.textContent = '⏹️ Parar';
+        refreshBtn.classList.add('dm-stop');
+      }
+      const shouldStop = () => state.memberStop;
+      try {
+        if (!opts.loadMore) {
+          setStatusLive('Aguardando Gateway...');
+        }
+        const progress = (p) => {
+          if (shouldStop()) return;
+          const batch = `${p.rangeStep || '?'}/${p.maxSteps || '?'}`;
+          const idx = p.nextVirtualStart != null ? ` · a partir do índice ${p.nextVirtualStart}` : '';
+          setStatusLive(
+            `${opts.loadMore ? 'Mais' : 'Gateway'}: lote ${batch}${idx} · ${p.count} no cache (+${p.delta})`,
+          );
+        };
+        const { members, source, stats, canLoadMore, nextVirtualStart } = await gatewayFetchMembers(gid, {
+          query: q,
+          roleId,
+          shouldStop,
+          onProgress: progress,
+          loadMore: !!opts.loadMore,
+          resetCache: !!opts.resetCache,
+        });
+        if (shouldStop()) {
+          setStatus('⏹️ Parado.', 'dm-err');
+          return;
+        }
+        state.canLoadMore = !!canLoadMore;
+        state.lazyExhausted = !!stats.exhausted;
+        renderMemberList(members);
+        const approx = state.guildMeta?.approximate_member_count;
+        const srcLabel =
+          source === 'gateway-search'
+            ? 'busca Gateway'
+            : source === 'gateway-lazy-more'
+              ? 'mais faixas (op 14)'
+              : source === 'gateway-lazy'
+                ? 'lista lazy (op 14)'
+                : source === 'gateway-warmup'
+                  ? 'warmup Gateway'
+                  : source === 'rest-search-fallback'
+                    ? 'busca REST'
+                    : 'cache';
+        const added = Math.max(0, members.length - cachedBefore);
+        let okMsg = `✅ ${members.length} membro(s) no cache`;
+        if (added > 0) okMsg += ` (+${added} nesta rodada)`;
+        const stepsDone = stats.stepsCompleted ?? 0;
+        okMsg += ` · ${srcLabel}`;
+        if (stepsDone) okMsg += ` · ${stepsDone} pedido(s) · próx. índice ${nextVirtualStart ?? '?'}`;
+        if (!members.length) {
+          okMsg =
+            '⚠️ Cache vazio. Abra a lista de membros no Discord (lateral), role um pouco, e clique Atualizar. Ou busque por nome.';
+        } else if (!q && approx && approx > members.length) {
+          okMsg += ` (~${approx.toLocaleString('pt-BR')} no servidor — role a lista para carregar mais).`;
+        }
+        if (stats.timedOut && members.length) okMsg += ' (timeout parcial)';
+        if (state.lazyExhausted && !q) okMsg += ' · sem mais faixas';
+        setStatus(okMsg, members.length ? 'dm-ok' : 'dm-err');
+      } catch (e) {
+        setStatus(`❌ ${escapeHtml(e.message)}`, 'dm-err');
+      } finally {
+        state.memberLoading = false;
+        state.memberStop = false;
+        setLoadMoreShimmer(false);
+        if (refreshBtn) {
+          refreshBtn.textContent = '🔄 Atualizar';
+          refreshBtn.classList.remove('dm-stop');
+        }
+      }
+    };
+
+    const runMemberLoad = (opts = {}) => runMemberFetch(opts);
+
+    const runMemberLoadMore = () => {
+      if (state.memberLoading) return;
+      if (Date.now() - (state.lastLoadMoreAt || 0) < 1500) return;
+      state.lastLoadMoreAt = Date.now();
+      lazyExhaustedByGuild.delete(String(state.guildId));
+      state.lazyExhausted = false;
+      const listEl = $('__dm-srv-mlist');
+      const scrollTop = listEl?.scrollTop ?? 0;
+      setLoadMoreShimmer(true);
+      runMemberFetch({ loadMore: true }).then(() => {
+        if (listEl) listEl.scrollTop = scrollTop;
+      });
+    };
+
+    on('__dm-srv-seg-overview', () => switchSection('overview'));
+    on('__dm-srv-seg-members', () => switchSection('members'));
+    on('__dm-srv-seg-roles', () => switchSection('roles'));
+    $('__dm-srv-guild')?.addEventListener('change', loadGuildContext);
+    $('__dm-srv-gid')?.addEventListener('change', loadGuildContext);
+    on('__dm-srv-refresh', (ev) => {
+      const resetCache = !!(ev?.altKey || ev?.shiftKey);
+      if (state.section === 'members') runMemberLoad({ resetCache });
+      else loadGuildContext();
+    });
+
+    await loadGuildContext();
+  };
+
   const renderExport = async () => {
     const panel = $('__dm-panel-exp'),
       footer = $('__dm-footer-exp');
     if (!panel || !footer) return;
 
-    panel.innerHTML = `<div class="dm-empty"><span class="dm-spin"></span> Carregando DMs e grupos...</div>`;
+    panel.innerHTML = `<div class="dm-empty">${dmShimmer('Carregando DMs e grupos...')}</div>`;
     footer.innerHTML = `<span class="dm-counter" id="__dm-ecnt">0 selecionado(s)</span><button class="dm-btn dm-ghost" id="__dm-eselall" disabled>Selecionar todos</button><button class="dm-btn dm-brand" id="__dm-erun" disabled>📥 Exportar</button>`;
 
     let channels = [],
@@ -2444,11 +4308,15 @@
         runBtn.textContent = '⏳ Exportando...';
       }
       const status = $('__dm-estatus');
+      const setStatusLive = (text, suffix = '') => {
+        if (!status) return;
+        status.style.display = '';
+        dmUpdateShimmer(status, text, suffix);
+      };
       const setStatus = (html) => {
-        if (status) {
-          status.style.display = '';
-          status.innerHTML = html;
-        }
+        if (!status) return;
+        status.style.display = '';
+        status.innerHTML = html;
       };
 
       const format = $('__dm-eformat')?.value || 'json';
@@ -2460,12 +4328,11 @@
         for (let i = 0; i < selectedChannels.length; i++) {
           const ch = selectedChannels[i];
           const chName = getName(ch);
-          setStatus(
-            `<span class="dm-spin"></span> Exportando ${escapeHtml(chName)} (${i + 1}/${selectedChannels.length})...`,
-          );
+          setStatusLive(`Exportando ${chName} (${i + 1}/${selectedChannels.length})...`);
           const messages = await fetchChannelMessages(ch.id, limit, (done, total) => {
-            setStatus(
-              `<span class="dm-spin"></span> Exportando ${escapeHtml(chName)} (${i + 1}/${selectedChannels.length}) — ${done} mensagens ${progressBar(done, total || done)}`,
+            setStatusLive(
+              `Exportando ${chName} (${i + 1}/${selectedChannels.length}) — ${done} mensagens`,
+              progressBar(done, total || done),
             );
           });
           result.push({
