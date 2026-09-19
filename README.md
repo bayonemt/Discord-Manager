@@ -1,6 +1,6 @@
 # Discord Manager
 
-A single userscript (paste into the browser console) that adds a bulk management panel to your own Discord account: delete messages, remove friends, automatically resolve Quests, mute/leave servers in bulk, mark everything as read, search/export messages, and view profiles — all through a button injected into Discord's own UI.
+A single userscript (paste into the browser console) that adds a bulk management panel to your own Discord account: delete messages, remove friends, automatically resolve Quests, mute/leave servers in bulk, mark everything as read, search/export messages, inspect servers (overview, roles, member list), and view profiles — all through a button injected into Discord's own UI.
 
 > Built and maintained as a personal/educational project. See [Warnings and risks](#️-warnings-and-risks) before using.
 
@@ -18,7 +18,7 @@ Possible consequences of using this script:
 
 ## What it does
 
-A "Manage" button is injected into the sidebar (near "Friends") and a gear icon into the app's top bar. Open it with a click or the **`Ctrl+Shift+1`** shortcut. The panel has 9 tabs:
+A "Manage" button is injected into the sidebar (near "Friends") and a gear icon into the app's top bar. Open it with a click or the **`Ctrl+Shift+1`** shortcut. The panel has 10 tabs:
 
 | Tab | What it does |
 |---|---|
@@ -30,7 +30,20 @@ A "Manage" button is injected into the sidebar (near "Friends") and a gear icon 
 | 📖 **Read** | Marks selected servers/DMs as read. |
 | 🔍 **Search** | Searches messages (yours or any term) across servers and DMs, with pagination. |
 | 👤 **User** | Looks up a user's public profile by ID (bio, badges, banner, connections, avatar decoration, mutual servers/friends). |
-| 📥 **Export** | Exports a DM/group chat history to a `.txt` file. |
+| 📥 **Export** | Exports selected DMs/group chats to **JSON** (structured) or **TXT** (readable), with configurable message limits; downloads automatically when finished. |
+| 🌍 **Server** | Pick a server (dropdown or paste ID): **Overview** (name, icon, member counts, owner), **Members** (Gateway lazy list + search), **Roles** (list with member counts, click to filter members). |
+
+#### Server tab — members (important)
+
+The member list uses the **same Gateway path as Discord Web** (lazy guild / opcode 14), not the bot-only `GET /guilds/{id}/members` endpoint (which returns *Missing Access* for normal user tokens).
+
+- **Refresh** loads an initial batch of virtual list ranges and **accumulates** members in a local cache (it does not wipe the cache on every click).
+- **Alt+Refresh** (or Shift+Refresh) clears the member cache for that server and starts over.
+- Scroll to the bottom of the member list: **“Carregando mais..”** (shimmer) triggers the next Gateway ranges automatically.
+- **Search by name** uses `GUILD_MEMBERS_REQUEST` (opcode 8) / REST search fallback — best way to find someone in very large servers.
+- **Role filter** and hoisted-role **section headers** mirror the sidebar member list when Gateway data is available.
+
+On servers with tens or hundreds of thousands of members, Discord **never** sends the full list to the client — only subscribed index ranges. Expect a **partial cache**, not a complete export of every member.
 
 ## How to use
 
@@ -93,9 +106,21 @@ This quest type (used by sponsored quests, e.g. game/film promotions) is not res
 
 To use this feature: run `python3 discord_quest_relay.py` in a separate terminal before resolving this type of quest. The main script auto-detects (`cspFetch`) whether the relay is available; if not, it falls back to a direct `fetch` attempt (which will fail due to CSP, with an error message explaining what to do).
 
+### Server tab — webpack stores and Gateway
+
+On load, the script resolves Discord’s internal webpack modules with **behavior checks** (not just property names), to avoid mistaking i18n/string bundles for real Flux stores:
+
+- **`FluxDispatcher`** — proven with a subscribe → dispatch → handler probe.
+- **`GuildMemberStore`**, **`UserStore`**, **`GuildActions`**, etc. — validated before use.
+- **Member hydration** — listens for `GUILD_MEMBER_LIST_UPDATE` / `GUILD_MEMBERS_CHUNK`, merges into a persistent cache, and requests lazy list ranges aligned to the last synced virtual index (same idea as scrolling the native member sidebar).
+
+Guild metadata (name, icon, approximate counts, roles, role member counts) comes from the same REST routes the web client uses (`/guilds`, `/roles`, `/roles/member-counts`). Per-member **server profile** popups combine cache, Gateway chunks, and `/users/{id}/profile?guild_id=` when needed.
+
 ### UI injection / SPA persistence
 
 Discord Web is a SPA that constantly re-renders the UI, so the "Manage" button (`injectBtn`) and the top-bar icon (`injectTopbarBtn`) are re-injected every 2 seconds via `setInterval`, checking whether they still exist in the DOM before recreating them. Progress from background tasks (message deletion, friend removal) appears both in the sidebar button text and in a label next to the top-bar icon.
+
+Long-running operations show a **shimmer loading label** in the status area; frequent progress updates reuse the same DOM node so the animation is not reset on every tick (export, Gateway member load, search, etc.).
 
 ## Repository structure
 
@@ -108,6 +133,8 @@ discord_quest_relay.py    # optional local relay, only needed for ACHIEVEMENT_IN
 
 - `PLAY_ON_DESKTOP`/`STREAM_ON_DESKTOP` only work in the desktop client (`DiscordNative`), not in the browser.
 - `ACHIEVEMENT_IN_ACTIVITY` depends on the local relay running; without it, the bypass fails with a clear message indicating the reason (CSP).
+- **Server → Members** cannot list every member in huge guilds; it is limited to what the Gateway lazy list exposes (same as Discord Web). Use name search for targeted lookups.
+- Webpack module names and Gateway payloads change when Discord updates the client — if the Server tab stops finding stores after an update, reload the page (`F5`) and paste the script again.
 - Like any reverse-engineering of an undocumented API, Discord may change behavior/response formats at any time and break parts of the script without warning.
 
 ## License
