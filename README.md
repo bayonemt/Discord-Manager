@@ -1,6 +1,6 @@
 # Discord Manager
 
-A single userscript (paste into the browser console) that adds a bulk management panel to your own Discord account: delete messages, remove friends, automatically resolve Quests, mute/leave servers in bulk, mark everything as read, search/export messages, inspect servers (overview, roles, member list), and view profiles — all through a button injected into Discord's own UI.
+A single userscript (paste into the browser console) that adds a bulk management panel to your own Discord account: delete messages, remove friends, automatically resolve Quests, farm profile badges, mute/leave servers in bulk, mark everything as read, search/export messages, inspect servers (overview, roles, member list), and view profiles — all through a button injected into Discord's own UI.
 
 > Built and maintained as a personal/educational project. See [Warnings and risks](#️-warnings-and-risks) before using.
 
@@ -18,7 +18,7 @@ Possible consequences of using this script:
 
 ## What it does
 
-A "Manage" button is injected into the sidebar (near "Friends") and a gear icon into the app's top bar. Open it with a click or the **`Ctrl+Shift+1`** shortcut. The panel has 10 tabs:
+A "Manage" button is injected into the sidebar (near "Friends") and a gear icon into the app's top bar. Open it with a click or the **`Ctrl+Shift+1`** shortcut. The panel has 11 tabs:
 
 | Tab | What it does |
 |---|---|
@@ -32,6 +32,7 @@ A "Manage" button is injected into the sidebar (near "Friends") and a gear icon 
 | 👤 **User** | Looks up a user's public profile by ID (bio, badges, banner, connections, avatar decoration, mutual servers/friends). |
 | 📥 **Export** | Exports selected DMs/group chats to **JSON** (structured) or **TXT** (readable), with configurable message limits; downloads automatically when finished. |
 | 🌍 **Server** | Pick a server (dropdown or paste ID): **Overview** (name, icon, member counts, owner), **Members** (Gateway lazy list + search), **Roles** (list with member counts, click to filter members). |
+| 🏅 **Badges** | Farm Discord profile badges: **Streaming** (Go Live hours), **Game Time** (detectable game hours), **Game Variety** (number of distinct games played). Each badge has 10 tiers with increasing requirements. See [Badges](#badges) below. |
 
 #### Server tab — members (important)
 
@@ -44,6 +45,29 @@ The member list uses the **same Gateway path as Discord Web** (lazy guild / opco
 - **Role filter** and hoisted-role **section headers** mirror the sidebar member list when Gateway data is available.
 
 On servers with tens or hundreds of thousands of members, Discord **never** sends the full list to the client — only subscribed index ranges. Expect a **partial cache**, not a complete export of every member.
+
+### Badges
+
+The Badges tab lets you farm three Discord profile badges by spoofing the activity data that the client reports to Discord's servers:
+
+| Badge | What it farms | How |
+|---|---|---|
+| **Streaming** | Go Live hours (1 h – 5,000 h across 10 tiers) | For Game Time and Game Variety, the script spoofs `RunningGameStore` inside the browser so Discord thinks a detectable game is running. For Streaming, the badge requires a real Gateway voice + video session (the browser cannot fake that), so the tab generates a ready-to-run CLI command for [`stream.cjs`](./stream.cjs) — a standalone Node.js script that connects to Discord's Gateway and Voice servers, joins a voice channel, and sends a minimal video stream (Go Live) for the configured number of hours. |
+| **Game Time** | Detectable-game hours (1 h – 5,000 h across 10 tiers) | Picks a random game from Discord's detectable-games list, spoofs `RunningGameStore`, and sends `RUNNING_GAMES_CHANGE` for the required duration. |
+| **Game Variety** | Distinct games played (2 – 100 across 10 tiers) | Same spoof mechanism as Game Time, but cycles through *N* different detectable games (one session per game) to increase the distinct-games counter. |
+
+#### `stream.cjs`
+
+A Node.js CLI script (no npm dependencies) that automates Go Live streaming for the Streaming badge. It:
+
+- Authenticates with your Discord token (prompted on first run, cached in `session.json`).
+- Connects to the Discord Gateway via WebSocket (TLS) and maintains heartbeats.
+- Joins a voice channel you choose (interactive server/channel picker), negotiates a voice session, and starts a Go Live stream.
+- Sends a minimal video payload (Opus silence + a small MP4 loop from `assets/video.mp4` if present, or silence-only otherwise) so Discord counts it as an active stream.
+- Tracks progress against the 10 streaming tiers and prints a live status with ETA.
+- Persists session state to `session.json` for resumption after restarts.
+
+Run with `node stream.cjs` in a terminal. Requires Node.js 18+.
 
 ## How to use
 
@@ -126,6 +150,7 @@ Long-running operations show a **shimmer loading label** in the status area; fre
 
 ```
 discord.js                # the main script — paste this into the console
+stream.cjs                # standalone Node.js script for Go Live streaming badge farming
 discord_quest_relay.py    # optional local relay, only needed for ACHIEVEMENT_IN_ACTIVITY quests
 ```
 
@@ -135,6 +160,7 @@ discord_quest_relay.py    # optional local relay, only needed for ACHIEVEMENT_IN
 - `ACHIEVEMENT_IN_ACTIVITY` depends on the local relay running; without it, the bypass fails with a clear message indicating the reason (CSP).
 - **Server → Members** cannot list every member in huge guilds; it is limited to what the Gateway lazy list exposes (same as Discord Web). Use name search for targeted lookups.
 - Webpack module names and Gateway payloads change when Discord updates the client — if the Server tab stops finding stores after an update, reload the page (`F5`) and paste the script again.
+- **Badges → Streaming** requires running `stream.cjs` separately in a terminal (Node.js 18+), because Go Live needs a real Gateway voice + video session that cannot be faked from browser JS alone. Game Time and Game Variety work entirely inside the browser.
 - Like any reverse-engineering of an undocumented API, Discord may change behavior/response formats at any time and break parts of the script without warning.
 
 ## License
